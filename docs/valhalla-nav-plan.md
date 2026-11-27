@@ -230,7 +230,8 @@ message `0x04 ROUTE` arrives in order:
 * The NimBLE write callback only queues a `route_chunk_t`; the GUI task
   assembles `reset -> add* -> commit`, checking `seq` for gaps and dropping the
   whole route rather than drawing a broken one.
-* `map_view.c` stores up to 512 points and draws a two-pass (casing + fill)
+* `map_view.c` stores up to 2048 points (in PSRAM; Vela sends up to 2048,
+  this app 512) and draws a two-pass (casing + fill)
   polyline under the markers, reusing the marker's pan/zoom/heading-up
   projection and culling off-screen segments. The old bowed "suggested route"
   dotted line is now only the fallback when no route geometry exists.

@@ -61,7 +61,10 @@
 //   [0] 0x04, [1] flags (bit0 START, bit1 END), [2] seq, [3] count,
 //   [4..] count * (i32 lat_e7, i32 lon_e7), little-endian.
 // A single START|END chunk with count=0 clears the route. Chunks are written
-// with tag=null (never coalesced), unlike STATE.
+// with tag=null (never coalesced), unlike STATE. Vela sends up to 2048 points
+// (full detail for the next 20 km, thinner beyond) and sends the line again
+// every 8 km of progress on a long drive; the device keeps up to ROUTE_MAX
+// (map_view.c, 2048).
 #define NAV_ROUTE 0x04
 #define NAV_ROUTE_HDR 4
 #define NAV_ROUTE_CHUNK_MAX 31
@@ -108,6 +111,17 @@
 // and n = 0 clears them.
 #define NAV_TRAFFIC 0x08
 #define NAV_TRAFFIC_MAX 50
+
+// Trip stops (added 2026-11-26, for bike-os's waypoint face). One write,
+// latest wins, sent when the next stop or its figures change:
+//   [0] 0x09, [1] number of the next stop (1-based; 0 = none left),
+//   [2] count of stops on the trip (intermediate stops, not the destination;
+//   0 clears), [3] 0, [4..7] u32 meters to the next stop, [8..9] u16 seconds
+//   to it, [10] label length n (<= NAV_STOPS_LABEL_MAX), [11..] label (UTF-8).
+// This firmware does not show stops and ignores the message.
+#define NAV_STOPS 0x09
+#define NAV_STOPS_HDR 11
+#define NAV_STOPS_LABEL_MAX 40
 
 #define NAV_NONE 0
 #define NAV_CONTINUE 1

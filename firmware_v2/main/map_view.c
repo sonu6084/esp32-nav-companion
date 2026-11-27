@@ -9,6 +9,7 @@
 #include "tiles.h"
 #include "touch.h"
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -76,8 +77,15 @@ static double s_mx, s_my;   // marker as displayed (animated)
 static bool s_has_dest;     // destination marker (from the phone)
 static double s_dnx, s_dny; // destination, normalized Web-Mercator
 // Route line (Valhalla geometry), assembled from BLE chunks. GUI task only.
-#define ROUTE_MAX 512
-static int32_t s_route_lat[ROUTE_MAX], s_route_lon[ROUTE_MAX];
+// Up to 2048 points: Vela keeps full detail for the road ahead and resends the
+// line as the drive goes on (its DeviceNav.ROUTE_MAX_POINTS). The arrays live in
+// PSRAM, allocated on the first route, and each point's normalized world
+// position is worked out once per route instead of every frame.
+#define ROUTE_MAX 2048
+static int32_t *s_route_lat, *s_route_lon;
+static double *s_route_nx, *s_route_ny;     // lon_to_nx / lat_to_ny, filled on commit
+static int32_t *s_route_rx, *s_route_ry;    // screen positions, per frame (draw_route)
+static float s_prev_frac = -1.0f;           // where we were on the line a resend replaces
 static int s_route_n;
 static bool s_route_active;
 static uint32_t s_line_anim_ms;  // last marching-dots invalidate
@@ -110,7 +118,7 @@ static bool s_sleep_req;
 
 // How far along the route each of its points is, 0..1 of its length, and the
 // congested stretches in the same terms, sorted by where they start.
-static float s_route_frac[ROUTE_MAX];
+static float *s_route_frac;
 typedef struct {
     float a, b;
     uint8_t level;
@@ -823,10 +831,9 @@ static void draw_route(lv_layer_t *layer)
 {
     if (!s_route_active || s_route_n < 2) return;
 
-    static int32_t rx[ROUTE_MAX], ry[ROUTE_MAX];
+    int32_t *rx = s_route_rx, *ry = s_route_ry;
     for (int i = 0; i < s_route_n; i++) {
-        world_screen(lon_to_nx(s_route_lon[i] / 1e7), lat_to_ny(s_route_lat[i] / 1e7),
-                     s_f_ox, s_f_oy, s_f_rot, &rx[i], &ry[i]);
+        world_screen(s_route_nx[i], s_route_ny[i], s_f_ox, s_f_oy, s_f_rot, &rx[i], &ry[i]);
     }
     if (s_route_seg > s_route_n - 2) s_route_seg = 0, s_route_t = 0.0f;
     route_locate(rx, ry);
@@ -1285,7 +1292,7 @@ static void road_fade_build(double w, float c, float sn)
         int from = s_route_seg > 0 && s_route_seg < s_route_n - 1 ? s_route_seg : 0;
         int px = 0, py = 0;
         for (int i = from; i < s_route_n; i++) {
-            frame_screen(lon_to_nx(s_route_lon[i] / 1e7), lat_to_ny(s_route_lat[i] / 1e7), w, c, sn, &x, &y);
+            frame_screen(s_route_nx[i], s_route_ny[i], w, c, sn, &x, &y);
             if (i > from) {
                 int minx = px < x ? px : x, maxx = px > x ? px : x;
                 int miny = py < y ? py : y, maxy = py > y ? py : y;
@@ -2302,8 +2309,32 @@ void map_view_set_dest(bool valid, int32_t lat_e7, int32_t lon_e7)
 
 // ---- route line ----------------------------------------------------------
 
+static bool route_alloc(void)
+{
+    if (s_route_lat) return true;
+    s_route_lat = heap_caps_malloc(ROUTE_MAX * sizeof(int32_t), MALLOC_CAP_SPIRAM);
+    s_route_lon = heap_caps_malloc(ROUTE_MAX * sizeof(int32_t), MALLOC_CAP_SPIRAM);
+    s_route_nx = heap_caps_malloc(ROUTE_MAX * sizeof(double), MALLOC_CAP_SPIRAM);
+    s_route_ny = heap_caps_malloc(ROUTE_MAX * sizeof(double), MALLOC_CAP_SPIRAM);
+    s_route_rx = heap_caps_malloc(ROUTE_MAX * sizeof(int32_t), MALLOC_CAP_SPIRAM);
+    s_route_ry = heap_caps_malloc(ROUTE_MAX * sizeof(int32_t), MALLOC_CAP_SPIRAM);
+    s_route_frac = heap_caps_malloc(ROUTE_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
+    if (s_route_lat && s_route_lon && s_route_nx && s_route_ny && s_route_rx && s_route_ry && s_route_frac)
+        return true;
+    heap_caps_free(s_route_lat); heap_caps_free(s_route_lon); heap_caps_free(s_route_nx);
+    heap_caps_free(s_route_ny); heap_caps_free(s_route_rx); heap_caps_free(s_route_ry);
+    heap_caps_free(s_route_frac);
+    s_route_lat = s_route_lon = s_route_rx = s_route_ry = NULL;
+    s_route_nx = s_route_ny = NULL;
+    s_route_frac = NULL;
+    return false;
+}
+
 void map_view_route_reset(void)
 {
+    // The phone resends the same drive as it goes (fresh detail ahead): keep
+    // our place so the new line is picked up where we are, not at its start.
+    s_prev_frac = s_route_active ? route_frac_now() : -1.0f;
     s_route_n = 0;
     s_route_active = false;
     s_traffic_n = 0;  // it belonged to the old line
@@ -2311,6 +2342,7 @@ void map_view_route_reset(void)
 
 void map_view_route_add(const int32_t *lat_e7, const int32_t *lon_e7, int n)
 {
+    if (!route_alloc()) return;
     for (int i = 0; i < n && s_route_n < ROUTE_MAX; i++) {
         s_route_lat[s_route_n] = lat_e7[i];
         s_route_lon[s_route_n] = lon_e7[i];
@@ -2353,6 +2385,26 @@ void map_view_route_commit(void)
     }
     s_route_seg = 0;  // a new line: start looking from its beginning
     s_route_t = 0.0f;
+    if (s_route_active) {
+        for (int i = 0; i < s_route_n; i++) {
+            s_route_nx[i] = lon_to_nx(s_route_lon[i] / 1e7);
+            s_route_ny[i] = lat_to_ny(s_route_lat[i] / 1e7);
+        }
+        // A resend of the drive we are on: start the search where we were
+        // along it. A different route fails the local search in route_locate()
+        // and falls back to the whole line.
+        if (s_prev_frac > 0.0f) {
+            for (int i = 0; i < s_route_n - 1; i++) {
+                if (s_route_frac[i + 1] >= s_prev_frac) {
+                    float span = s_route_frac[i + 1] - s_route_frac[i];
+                    s_route_seg = i;
+                    s_route_t = span > 1e-9f ? (s_prev_frac - s_route_frac[i]) / span : 0.0f;
+                    break;
+                }
+            }
+        }
+    }
+    s_prev_frac = -1.0f;
     invalidate();
 }
 
