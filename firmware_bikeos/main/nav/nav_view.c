@@ -1,5 +1,6 @@
 #include "nav_view.h"
 #include "map_view.h"  // bike-os: rejoin distance
+#include "bos_style.h"  // bike-os 0.11: the turn card
 #include "board.h"
 #include "display.h"
 #include "ui_common.h"
@@ -9,6 +10,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 // Bottom-centred banner. On a round panel the usable width shrinks towards
 // the bottom. For the 480x480 design: at y=410 the visible chord is ~339 px,
@@ -59,15 +61,24 @@ static void (*s_click_cb)(void);
 // bike-os: turn card for a drive with no route line (NAV_F_TURN_ONLY): a large
 // arrow, the distance, the street over two lines and the ETA line, centred for
 // the round panel. Not clickable, so swipes reach the map's faces underneath.
-static lv_obj_t *s_card, *s_card_dist, *s_card_street, *s_card_eta;
-// Real panel pixels (412 x 412), not design space: checked against the circle.
-#define CARD_ICON_CY 118     // the arrow spans ~42..194 at CARD_ICON_PCT
-#define CARD_ICON_PCT 210
-#define CARD_DIST_Y 200
-#define CARD_STREET_Y 258
-#define CARD_STREET_W 300    // the chord is ~338 px at the second line's foot (y 324)
-#define CARD_ETA_Y 336
-#define CARD_ETA_W 270       // ~274 px at y 360
+static lv_obj_t *s_card;
+static uint32_t s_card_key;  // what the card shows, folded: a change means redraw
+// bike-os 0.11 "night" layout, in real panel pixels (412 x 412), checked against the
+// circle: clock 40, green arrow (and the limit sign) ~112, the distance on a baseline at
+// 268, "onto" street 300, arrival and distance left 342, a progress ring on the rim.
+#define CARD_CLOCK_Y 40
+#define CARD_ICON_CY 116
+#define CARD_ICON_PCT 150
+#define CARD_NUM_BASE 268
+#define CARD_STREET_Y 300
+#define CARD_STREET_W 300
+#define CARD_ETA_Y 344
+#define CARD_RING_R 201
+#define CARD_RING_W 6
+static uint32_t s_icon_col;  // 0: the default; the card draws its arrow green
+// bike-os 0.11: flyover / tunnel badge (road badge, below)
+typedef enum { RK_NONE, RK_FLYOVER, RK_BELOW, RK_TUNNEL } road_kind_t;
+static road_kind_t road_kind(const char *s);
 
 static inline uint32_t now_ms(void)
 {
@@ -148,7 +159,7 @@ static void draw_icon(lv_layer_t *l, int cx, int cy, uint8_t type)
 {
     icon_pen_t p;
     bool warn = type == NAV_OFF_ROUTE;
-    pen_init(&p, lv_color_hex(warn ? COL_WARN : COL_ICON), ip(13));
+    pen_init(&p, lv_color_hex(warn ? COL_WARN : s_icon_col ? s_icon_col : COL_ICON), ip(13));
     int w = p.w;
 
     switch (type) {
@@ -319,21 +330,26 @@ static void refresh(void)
     if (!s_banner) return;
     bool active = s_have && (s_st.flags & NAV_F_ACTIVE) &&
                   (now_ms() - s_last_ms) < STALE_MS;
-    // bike-os: a drive with no route line gets the turn card in place of the banner.
-    bool card = active && !s_suppressed && (s_st.flags & NAV_F_TURN_ONLY);
+    // bike-os: a drive with no route line gets the turn card in place of the banner, and
+    // every drive ends on its "You've arrived" card.
+    bool card = active && !s_suppressed && ((s_st.flags & NAV_F_TURN_ONLY) || s_st.maneuver == NAV_ARRIVE);
     if (s_card) lv_obj_set_hidden(s_card, !card);
     lv_obj_set_hidden(s_banner, !active || s_suppressed || card);
     if (s_top) lv_obj_set_hidden(s_top, !active || s_suppressed || !s_minimal || card);  // bike-os
     if (!active) return;
     if (card) {
-        char buf[MAX_DIST_LABEL + 4] = "";
-        if (s_st.maneuver == NAV_ARRIVE) snprintf(buf, sizeof(buf), "Arrived");
-        // 0 is "not known yet" (the first step of a trip), not "now".
-        else if (s_st.dist_m) format_dist(buf, sizeof(buf), s_st.dist_m);
-        lv_label_set_text(s_card_dist, buf);
-        char eta[64];
-        eta_text(eta, sizeof(eta));
-        lv_label_set_text(s_card_eta, eta);
+        // Redraw only when something on it changed: refresh() runs every GUI loop.
+        uint32_t k = s_st.maneuver;
+        k = k * 65599u + s_st.dist_m;
+        k = k * 65599u + s_st.remaining_m / 100;
+        k = k * 65599u + (map_view_clock_now() / 60);
+        k = k * 65599u + s_limit;
+        k = k * 65599u + (uint32_t)nav_view_progress_permille();
+        for (const char *c = s_street; *c; c++) k = k * 31u + (uint8_t)*c;
+        if (k != s_card_key) {
+            s_card_key = k;
+            lv_obj_invalidate(s_card);
+        }
         return;
     }
     if (s_top && s_minimal) {  // bike-os: "ETA 10:50 . 27 min . 10.7 km"
@@ -362,7 +378,7 @@ static void refresh(void)
     lv_label_set_text(s_lbl_left, left);
     // The preview takes the right-hand end of the banner: the text narrows to
     // make room, and the distance-left figure (which lives there) steps aside.
-    bool then = then_shown();
+    bool then = then_shown() || road_kind(street_line()) != RK_NONE;   // bike-os 0.11: or the badge
     lv_obj_set_hidden(s_lbl_left, s_minimal || then);
     static int then_was = -1;
     if (then_was != (int)then || lv_obj_get_width(s_lbl_street) != TEXT_W - (then ? THEN_ROOM : 0)) {
@@ -447,6 +463,92 @@ int nav_view_progress_permille(void)
     return 1000 - (int)((uint64_t)s_st.remaining_m * 1000u / s_total_m);
 }
 
+// ---------------------------------------------------------------- road badge
+// bike-os 0.11: whether the step takes a flyover, stays below one, or goes through a
+// tunnel, read from the turn's own words (Google Maps' instruction, or the road name or
+// instruction Vela sends). Shown as a small round badge by the arrow.
+
+static bool has_word(const char *low, const char *w)
+{
+    return strstr(low, w) != NULL;
+}
+
+static road_kind_t road_kind(const char *s)
+{
+    char low[NAV_TEXT_MAX + 2];
+    size_t n = 0;
+    for (; s[n] && n < sizeof low - 1; n++) low[n] = (char)tolower((unsigned char)s[n]);
+    low[n] = 0;
+    if (!n) return RK_NONE;
+    // below first: "avoid the flyover" also says "flyover"
+    if (has_word(low, "avoid the flyover") || has_word(low, "below the flyover") || has_word(low, "under the flyover") ||
+        has_word(low, "service road") || has_word(low, "stay below") || has_word(low, "avoid the overpass"))
+        return RK_BELOW;
+    if (has_word(low, "tunnel") || has_word(low, "underpass") || has_word(low, "subway"))
+        return RK_TUNNEL;
+    if (has_word(low, "flyover") || has_word(low, "overpass") || has_word(low, "elevated") ||
+        has_word(low, "overbridge") || has_word(low, "bridge"))
+        return RK_FLYOVER;
+    return RK_NONE;
+}
+
+static void badge_line(lv_layer_t *l, int x1, int y1, int x2, int y2, int w, uint32_t col)
+{
+    lv_draw_line_dsc_t d;
+    lv_draw_line_dsc_init(&d);
+    d.color = lv_color_hex(col);
+    d.width = w;
+    d.round_start = d.round_end = 1;
+    d.p1.x = x1; d.p1.y = y1; d.p2.x = x2; d.p2.y = y2;
+    lv_draw_line(l, &d);
+}
+
+// A round badge of radius [r] at (x, y): a bridge deck on pillars, or a tunnel mouth.
+static void draw_road_badge(lv_layer_t *l, int x, int y, int r, road_kind_t k)
+{
+    if (k == RK_NONE) return;
+    uint32_t ring = k == RK_BELOW ? BOS_WARN : k == RK_TUNNEL ? BOS_SOFT : BOS_ROUTE;
+    lv_draw_rect_dsc_t bg;
+    lv_draw_rect_dsc_init(&bg);
+    bg.radius = LV_RADIUS_CIRCLE;
+    bg.bg_color = lv_color_hex(0x14171C);
+    bg.bg_opa = LV_OPA_COVER;
+    bg.border_color = lv_color_hex(ring);
+    bg.border_width = r >= 20 ? 3 : 2;
+    bg.border_opa = LV_OPA_COVER;
+    lv_area_t a = {x - r, y - r, x + r, y + r};
+    lv_draw_rect(l, &bg, &a);
+    int u = r * 10 / 24;   // the icon is drawn for r = 24 and scaled
+    if (k == RK_TUNNEL) {
+        lv_draw_arc_dsc_t arc;
+        lv_draw_arc_dsc_init(&arc);
+        arc.color = lv_color_white();
+        arc.width = r >= 20 ? 4 : 3;
+        arc.center.x = x;
+        arc.center.y = y + u / 2;
+        arc.radius = u + u / 3;
+        arc.start_angle = 180;
+        arc.end_angle = 360;
+        lv_draw_arc(l, &arc);
+        badge_line(l, x - u - u / 2, y + u / 2, x + u + u / 2, y + u / 2, r >= 20 ? 3 : 2, 0xFFFFFF);
+        return;
+    }
+    // deck, two pillars, the ground
+    int deck = y - u / 2, ground = y + u;
+    badge_line(l, x - u - u / 2, deck, x + u + u / 2, deck, r >= 20 ? 4 : 3, 0xFFFFFF);
+    badge_line(l, x - u / 2 - 1, deck, x - u / 2 - 1, ground, r >= 20 ? 3 : 2, 0xFFFFFF);
+    badge_line(l, x + u / 2 + 1, deck, x + u / 2 + 1, ground, r >= 20 ? 3 : 2, 0xFFFFFF);
+    badge_line(l, x - u - u / 2, ground, x + u + u / 2, ground, 2, k == RK_BELOW ? BOS_WARN : 0x5F6670);
+    if (k == RK_BELOW) {   // a short arrow on the ground, under the deck: stay below
+        badge_line(l, x - u + 1, ground - u / 3, x + u - 1, ground - u / 3, 2, BOS_WARN);
+    }
+}
+
+static const char *road_kind_caption(road_kind_t k)
+{
+    return k == RK_FLYOVER ? "TAKE FLYOVER" : k == RK_BELOW ? "STAY BELOW" : k == RK_TUNNEL ? "TUNNEL" : "";
+}
+
 static void banner_draw_cb(lv_event_t *e)
 {
     lv_layer_t *layer = lv_event_get_layer(e);
@@ -457,7 +559,9 @@ static void banner_draw_cb(lv_event_t *e)
     // by the banner's own position.
     lv_area_t c;
     lv_obj_get_coords(obj, &c);
+    s_icon_col = BOS_GO;  // bike-os 0.11: the next turn is green everywhere
     draw_icon(layer, c.x1 + ICON_CX, c.y1 + ICON_CY, s_st.maneuver);
+    s_icon_col = 0;
     if (then_shown()) {
         // "then" over a small copy of the following turn's icon, at the right.
         lv_draw_label_dsc_t d;
@@ -471,31 +575,213 @@ static void banner_draw_cb(lv_event_t *e)
         s_icon_pct = THEN_PCT;
         draw_icon(layer, c.x1 + THEN_CX, c.y1 + THEN_CY, s_st.after_maneuver);
         s_icon_pct = ICON_PCT;
+    } else {
+        // bike-os 0.11: the flyover / tunnel badge takes the right-hand end instead
+        draw_road_badge(layer, c.x1 + THEN_CX, c.y1 + BANNER_H / 2, 16, road_kind(street_line()));
     }
 }
 
-// bike-os: the turn card's arrow, large, above the distance.
+// ---------------------------------------------------------------- turn card
+// bike-os 0.11. Everything on it is drawn here, so the number and its unit share a
+// baseline and "onto" and the arrival time take their own colours.
+
+static void card_text(lv_layer_t *l, const char *s, const lv_font_t *f, uint32_t col,
+                      int x1, int y_top, int w, lv_text_align_t al)
+{
+    lv_draw_label_dsc_t d;
+    lv_draw_label_dsc_init(&d);
+    d.text = s;
+    d.font = f;
+    d.color = lv_color_hex(col);
+    d.align = al;
+    lv_area_t a = {x1, y_top, x1 + w - 1, y_top + f->line_height * 2};
+    lv_draw_label(l, &d, &a);
+}
+
+static int text_w(const char *s, const lv_font_t *f)
+{
+    lv_point_t sz;
+    lv_text_get_size(&sz, s, f, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return sz.x;
+}
+
+// The top of a line of [f] whose glyphs sit on [base].
+static int top_for_base(const lv_font_t *f, int base)
+{
+    return base - (f->line_height - f->base_line);
+}
+
+static void card_disc(lv_layer_t *l, int x, int y, int r, uint32_t col)
+{
+    lv_draw_rect_dsc_t d;
+    lv_draw_rect_dsc_init(&d);
+    d.radius = LV_RADIUS_CIRCLE;
+    d.bg_color = lv_color_hex(col);
+    d.bg_opa = LV_OPA_COVER;
+    lv_area_t a = {x - r, y - r, x + r, y + r};
+    lv_draw_rect(l, &d, &a);
+}
+
+static void card_ring(lv_layer_t *l, int x, int y, int r, int w, int a0, int a1, uint32_t col, bool round)
+{
+    lv_draw_arc_dsc_t a;
+    lv_draw_arc_dsc_init(&a);
+    a.color = lv_color_hex(col);
+    a.width = w;
+    a.center.x = x;
+    a.center.y = y;
+    a.radius = r;
+    a.start_angle = a0;
+    a.end_angle = a1;
+    a.rounded = round;
+    lv_draw_arc(l, &a);
+}
+
+// A road sign: white disc, red ring, the number in black.
+static void card_limit(lv_layer_t *l, int x, int y, int r, uint16_t limit)
+{
+    card_disc(l, x, y, r, 0xFFFFFF);
+    card_ring(l, x, y, r - 2, 5, 0, 360, BOS_LIMIT, false);
+    char b[8];
+    snprintf(b, sizeof b, "%u", limit);
+    const lv_font_t *f = limit >= 100 ? &lv_font_montserrat_20 : &lv_font_montserrat_24;
+    card_text(l, b, f, 0x000000, x - r, y - f->line_height / 2, 2 * r, LV_TEXT_ALIGN_CENTER);
+}
+
+// The instruction itself, not a road: no "onto" in front of it.
+static bool is_instruction(const char *s)
+{
+    static const char *const verbs[] = {"Head", "Turn", "Keep", "Continue", "Slight", "Sharp", "Take",
+                                        "Make", "At ", "Merge", "Exit", "Your", "Arrive", "Finding", "Go "};
+    for (size_t i = 0; i < sizeof verbs / sizeof verbs[0]; i++)
+        if (strncmp(s, verbs[i], strlen(verbs[i])) == 0) return true;
+    return false;
+}
+
+static void fmt_clock(char *out, size_t cap, uint32_t epoch)
+{
+    uint32_t m = epoch / 60 % 1440;
+    unsigned h = m / 60, mm = m % 60;
+    if (map_view_clock_24h()) snprintf(out, cap, "%02u:%02u", h, mm);
+    else snprintf(out, cap, "%u:%02u", h % 12 ? h % 12 : 12, mm);
+}
+
 static void card_draw_cb(lv_event_t *e)
 {
     lv_layer_t *layer = lv_event_get_layer(e);
     lv_area_t c;
     lv_obj_get_coords(lv_event_get_target(e), &c);
-    s_icon_pct = CARD_ICON_PCT;
-    draw_icon(layer, c.x1 + BOARD_LCD_W / 2, c.y1 + CARD_ICON_CY, s_st.maneuver);
-    s_icon_pct = ICON_PCT;
-}
+    const int ox = c.x1, oy = c.y1, cx = ox + BOARD_LCD_W / 2;
+    char b[48];
 
-static lv_obj_t *card_label(const lv_font_t *font, uint32_t col, int y, int w, int lines)
-{
-    lv_obj_t *l = lv_label_create(s_card);
-    lv_obj_set_size(l, w, font->line_height * lines);
-    lv_label_set_long_mode(l, lines > 1 ? LV_LABEL_LONG_MODE_DOTS : LV_LABEL_LONG_MODE_SCROLL);
-    lv_obj_set_style_text_font(l, font, 0);
-    lv_obj_set_style_text_color(l, lv_color_hex(col), 0);
-    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(l, LV_ALIGN_TOP_MID, 0, y);
-    lv_label_set_text(l, "");
-    return l;
+    // the trip so far, round the rim
+    card_ring(layer, cx, oy + BOARD_LCD_H / 2, CARD_RING_R, CARD_RING_W, 0, 360, BOS_TRACK, false);
+    int p = nav_view_progress_permille();
+    if (p > 0) card_ring(layer, cx, oy + BOARD_LCD_H / 2, CARD_RING_R, CARD_RING_W, 270, 270 + 360 * p / 1000, BOS_GO, true);
+
+    uint32_t now = map_view_clock_now();
+    if (now) {
+        fmt_clock(b, sizeof b, now);
+        card_text(layer, b, &lv_font_montserrat_20, BOS_SOFT, cx - 80, oy + CARD_CLOCK_Y - 12, 160, LV_TEXT_ALIGN_CENTER);
+    }
+
+    if (s_st.maneuver == NAV_ARRIVE) {
+        // You've arrived: a pin in a green ring, the place under it.
+        int py = oy + 140;
+        card_ring(layer, cx, py, 52, 4, 0, 360, BOS_GO, false);
+        card_disc(layer, cx, py - 8, 18, BOS_LIMIT);
+        lv_draw_triangle_dsc_t tr;
+        lv_draw_triangle_dsc_init(&tr);
+        tr.color = lv_color_hex(BOS_LIMIT);
+        tr.p[0].x = cx - 15; tr.p[0].y = py - 1;
+        tr.p[1].x = cx + 15; tr.p[1].y = py - 1;
+        tr.p[2].x = cx;      tr.p[2].y = py + 26;
+        lv_draw_triangle(layer, &tr);
+        card_disc(layer, cx, py - 8, 7, 0x000000);
+        card_text(layer, "You've arrived", &lv_font_montserrat_28, BOS_TEXT, ox + 56, oy + 222, 300, LV_TEXT_ALIGN_CENTER);
+        if (s_street[0])
+            card_text(layer, s_street, &lv_font_montserrat_20, BOS_MUTED, ox + 66, oy + 264, 280, LV_TEXT_ALIGN_CENTER);
+        return;
+    }
+
+    // the turn, green, with the limit beside it when known
+    int ax = s_limit ? cx - 34 : cx;
+    s_icon_pct = CARD_ICON_PCT;
+    s_icon_col = s_st.maneuver == NAV_OFF_ROUTE ? 0 : BOS_GO;
+    draw_icon(layer, ax, oy + CARD_ICON_CY, s_st.maneuver);
+    s_icon_col = 0;
+    s_icon_pct = ICON_PCT;
+    if (s_limit) card_limit(layer, cx + 58, oy + CARD_ICON_CY - 4, 27, s_limit);
+    road_kind_t rk = road_kind(street_line());
+    if (rk != RK_NONE) {
+        int bx = ax - 92;
+        draw_road_badge(layer, bx, oy + CARD_ICON_CY - 4, 24, rk);
+        card_text(layer, road_kind_caption(rk), &lv_font_montserrat_14, rk == RK_BELOW ? BOS_WARN : BOS_SOFT,
+                  bx - 50, oy + CARD_ICON_CY + 26, 100, LV_TEXT_ALIGN_CENTER);
+    }
+
+    // the distance: a big number and a small unit on one baseline; 0 is "not known yet"
+    if (s_st.dist_m) {
+        const lv_font_t *nf;
+        const char *unit;
+        unsigned m = s_st.dist_m;
+        if (s_mph) {
+            unsigned ft = m * 3281u / 1000u;
+            if (ft < 1000) { snprintf(b, sizeof b, "%u", ft / 10 * 10); nf = BOS_FONT_HUGE; unit = "ft"; }
+            else { unsigned t = m * 10u / 1609u; snprintf(b, sizeof b, "%u.%u", t / 10, t % 10); nf = BOS_FONT_BIG; unit = "mi"; }
+        } else if (m < 1000) {
+            snprintf(b, sizeof b, "%u", m >= 100 ? m / 10 * 10 : m);
+            nf = BOS_FONT_HUGE;
+            unit = "m";
+        } else if (m < 10000) {
+            snprintf(b, sizeof b, "%u.%u", m / 1000, m % 1000 / 100);
+            nf = BOS_FONT_BIG;
+            unit = "km";
+        } else {
+            snprintf(b, sizeof b, "%u", (m + 500) / 1000);
+            nf = BOS_FONT_BIG;
+            unit = "km";
+        }
+        const lv_font_t *uf = &lv_font_montserrat_28;
+        int wn = text_w(b, nf), wu = text_w(unit, uf), gap = 8;
+        int x0 = cx - (wn + gap + wu) / 2;
+        card_text(layer, b, nf, BOS_TEXT, x0, oy + top_for_base(nf, CARD_NUM_BASE), wn + 4, LV_TEXT_ALIGN_LEFT);
+        card_text(layer, unit, uf, BOS_MUTED, x0 + wn + gap, oy + top_for_base(uf, CARD_NUM_BASE), wu + 4, LV_TEXT_ALIGN_LEFT);
+    }
+
+    // "onto" street, on one line when it fits; else the street alone over two
+    const char *st = street_line();
+    if (st[0]) {
+        const lv_font_t *sf = &lv_font_montserrat_20, *of = &lv_font_montserrat_16;
+        bool onto = !is_instruction(st);
+        int wo = onto ? text_w("onto", of) + 7 : 0, ws = text_w(st, sf);   // the gap by hand: a trailing space measures 0
+        if (wo + ws <= CARD_STREET_W) {
+            int x0 = cx - (wo + ws) / 2;
+            if (onto) card_text(layer, "onto", of, BOS_MUTED, x0, oy + top_for_base(of, CARD_STREET_Y), wo, LV_TEXT_ALIGN_LEFT);
+            card_text(layer, st, sf, BOS_TEXT, x0 + wo, oy + top_for_base(sf, CARD_STREET_Y), ws + 4, LV_TEXT_ALIGN_LEFT);
+        } else {
+            // two lines in the smaller size, so they fit between the number and the arrival
+            const lv_font_t *f2 = &lv_font_montserrat_16;
+            card_text(layer, st, f2, BOS_TEXT, cx - CARD_STREET_W / 2, oy + CARD_NUM_BASE + 6,
+                      CARD_STREET_W, LV_TEXT_ALIGN_CENTER);
+        }
+    }
+
+    // the arrival time in green, the distance left after it
+    char eta[16] = "", left[24];
+    uint32_t rm = s_st.remaining_m;
+    if (s_mph) { unsigned t = rm * 10u / 1609u; snprintf(left, sizeof left, "%u.%u mi", t / 10, t % 10); }
+    else if (rm >= 10000) snprintf(left, sizeof left, "%u km", (unsigned)((rm + 500) / 1000));
+    else if (rm >= 1000) snprintf(left, sizeof left, "%u.%u km", (unsigned)(rm / 1000), (unsigned)(rm % 1000 / 100));
+    else snprintf(left, sizeof left, "%u m", (unsigned)rm);
+    const lv_font_t *ef = &lv_font_montserrat_20;
+    if (now && s_st.remaining_s) fmt_clock(eta, sizeof eta, now + s_st.remaining_s);
+    char rest[32];
+    snprintf(rest, sizeof rest, eta[0] ? "  " LV_SYMBOL_BULLET "  %s" : "%s", left);
+    int we = eta[0] ? text_w(eta, ef) : 0, wr = text_w(rest, ef);
+    int x0 = cx - (we + wr) / 2;
+    if (eta[0]) card_text(layer, eta, ef, BOS_GO, x0, oy + top_for_base(ef, CARD_ETA_Y), we + 4, LV_TEXT_ALIGN_LEFT);
+    card_text(layer, rest, ef, BOS_MUTED, x0 + we, oy + top_for_base(ef, CARD_ETA_Y), wr + 4, LV_TEXT_ALIGN_LEFT);
 }
 
 static void banner_click_cb(lv_event_t *e)
@@ -584,10 +870,7 @@ void nav_view_init(void)
     lv_obj_set_clickable(s_card, false);
     lv_obj_set_scrollable(s_card, false);
     lv_obj_add_event_cb(s_card, card_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
-    s_card_dist = card_label(&lv_font_montserrat_48, COL_ICON, CARD_DIST_Y, CARD_STREET_W, 1);
-    s_card_street = card_label(&lv_font_montserrat_28, COL_STREET, CARD_STREET_Y, CARD_STREET_W, 2);
-    lv_label_set_text(s_card_street, street_line());
-    s_card_eta = card_label(&lv_font_montserrat_20, COL_DIST, CARD_ETA_Y, CARD_ETA_W, 1);
+    s_card_key = 0;
     lv_obj_set_hidden(s_card, true);
 
     layout();
@@ -598,7 +881,7 @@ void nav_view_destroy(void)
 {
     s_banner = s_lbl_street = s_lbl_dist = s_lbl_left = NULL;
     s_top = s_top_street = s_top_eta = NULL;  // bike-os
-    s_card = s_card_dist = s_card_street = s_card_eta = NULL;  // bike-os
+    s_card = NULL;  // bike-os
 }
 
 // bike-os: bottom edge of the top block (the map shades the route under it).
@@ -653,7 +936,6 @@ void nav_view_update(const nav_state_t *st, const char *street)
     }
     if (s_lbl_street) lv_label_set_text(s_lbl_street, street_line());
     if (s_top_street) lv_label_set_text(s_top_street, street_line());  // bike-os
-    if (s_card_street) lv_label_set_text(s_card_street, street_line());  // bike-os
     // Always re-evaluate visibility: a stop STATE carries no street, and
     // refresh() is what hides the banner (and applies staleness). Calling it
     // only from the street branch left the banner up forever after a stop.

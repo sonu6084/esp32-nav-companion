@@ -18,6 +18,7 @@
 #include "audio.h"
 
 int64_t g_fake_us;
+int64_t g_time_creep_us;   /* see stub/esp_timer.h */
 
 /* ---------------- FreeRTOS queue shim (single thread) ---------------- */
 struct sim_queue { UBaseType_t len, size, count, head; uint8_t *buf; };

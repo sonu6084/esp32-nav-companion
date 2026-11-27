@@ -18,6 +18,13 @@ static int32_t *s_lat, *s_lon;
 static int32_t s_prev_lat, s_prev_lon, s_pt_lat, s_pt_lon;
 static bool s_have_prev;
 static uint32_t s_t0_ms, s_prev_ms, s_still_since, s_fast_since, s_saved_at;
+
+/* Milliseconds from [then] to [now], signed. A stamp a little after [now] (a fix stamped
+   later in the same GUI loop than the loop's own clock) is a small negative, never ~49 days:
+   unsigned, it read as "no fix for 10 minutes", ended the ride and started a new one on
+   every fix, so a ride stayed at 0:00:00 and 0 km. */
+static int32_t since(uint32_t now, uint32_t then) { return (int32_t)(now - then); }
+static uint32_t elapsed_s(uint32_t now, uint32_t t0) { int32_t d = since(now, t0); return d > 0 ? (uint32_t)d / 1000 : 0; }
 static bool s_was_nav;
 static uint32_t s_moving_ms;
 static uint32_t s_nav_seen_ms;
@@ -102,7 +109,7 @@ void ride_init(const char *dir)
 
 ride_state_t ride_state(void) { return s_state; }
 const ride_summary_t *ride_current(void) { return s_state == RIDE_RECORDING ? &s_cur : &s_last; }
-bool ride_just_saved(uint32_t now_ms) { return s_saved_at && now_ms - s_saved_at < 10000; }
+bool ride_just_saved(uint32_t now_ms) { return s_saved_at && since(now_ms, s_saved_at) < 10000; }
 int ride_count(void) { return s_n; }
 
 bool ride_get(int i, ride_summary_t *out)
@@ -227,7 +234,7 @@ void ride_on_fix(int32_t lat, int32_t lon, uint16_t cms, bool good, uint32_t now
            It only says the phone is still there, so a ride does not end as "no fixes". */
         if (s_state == RIDE_RECORDING) {
             if (!s_t0_ms) s_t0_ms = now;
-            s_cur.elapsed_s = (now - s_t0_ms) / 1000;
+            s_cur.elapsed_s = elapsed_s(now, s_t0_ms);
             s_prev_ms = now;
             if (!s_still_since) s_still_since = now;
         }
@@ -279,7 +286,7 @@ void ride_on_fix(int32_t lat, int32_t lon, uint16_t cms, bool good, uint32_t now
         }
     }
     if (s_eff_cms > s_cur.max_cms) s_cur.max_cms = s_eff_cms;
-    s_cur.elapsed_s = (now - s_t0_ms) / 1000;
+    s_cur.elapsed_s = elapsed_s(now, s_t0_ms);
     if (moving) s_still_since = 0;
     else if (!s_still_since) s_still_since = now;
 
@@ -303,15 +310,15 @@ void ride_tick(uint32_t now, bool navigating)
     if (navigating) s_nav_seen_ms = now;    /* a route update gap is not the route ending */
     if (s_state == RIDE_IDLE) {
         bool nav_started = navigating && !s_was_nav;
-        bool riding = s_fast_since && now - s_fast_since >= RIDE_AUTO_START_S * 1000u;
+        bool riding = s_fast_since && since(now, s_fast_since) >= (int32_t)(RIDE_AUTO_START_S * 1000);
         if (nav_started || riding) ride_start();
     } else {
-        if (s_t0_ms) s_cur.elapsed_s = (now - s_t0_ms) / 1000;
-        bool stale = s_prev_ms && now - s_prev_ms > RIDE_AUTO_STOP_S * 1000u;   /* no fixes at all */
+        if (s_t0_ms) s_cur.elapsed_s = elapsed_s(now, s_t0_ms);
+        bool stale = s_prev_ms && since(now, s_prev_ms) > (int32_t)(RIDE_AUTO_STOP_S * 1000);   /* no fixes at all */
         /* parked for 10 min ends a ride, but never while a route is running
            (traffic, a long light, a fuel stop on the way) */
-        bool nav_recent = navigating || (s_nav_seen_ms && now - s_nav_seen_ms < 60000u);
-        bool still = !nav_recent && s_still_since && now - s_still_since > RIDE_AUTO_STOP_S * 1000u;
+        bool nav_recent = navigating || (s_nav_seen_ms && since(now, s_nav_seen_ms) < 60000);
+        bool still = !nav_recent && s_still_since && since(now, s_still_since) > (int32_t)(RIDE_AUTO_STOP_S * 1000);
         if (stale || still) ride_stop(true);
     }
     s_was_nav = navigating;

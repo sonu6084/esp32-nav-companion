@@ -11,6 +11,23 @@ v0.5 uses **your firmware_ws146 navigation system**: map, minimal BLE street dis
 ![navigation](docs/sim-v05-nav.png)
 ![apps](docs/sim-v05-apps.png)
 
+## New in 0.11.1 (night design, ride clock, flyover and tunnel badge)
+
+- **Rides count again.** The ride was restarting on every fix: `ride_tick` used the GUI
+  loop's start time while `ride_on_fix` stamped a later one, and the unsigned difference
+  wrapped. Times are now compared signed (`since()`), with a fresh `now_ms()`.
+- **Night design** (`bos_style.h` holds the palette and fonts): a full-screen turn card with a
+  progress ring, a green arrow, big distance, street and green ETA; an Arrived screen; a Cruise
+  face (speed, heading-up compass ring, limit, clock, battery); a restyled compass; a 2×2 ride
+  stats grid; Now playing in blue; streets drawn with a soft glow on the map.
+- **Flyover and tunnel badge.** A step whose words take a flyover ("TAKE FLYOVER", blue),
+  stay below one ("STAY BELOW", amber: "avoid the flyover", "service road") or go through a
+  tunnel ("TUNNEL", grey) gets a small round badge by the arrow on the turn card, and at the
+  banner's right end when no "then" turn is shown (`road_kind` in `nav_view.c`).
+- **Windows simulator**: `tools-sim/build_win.sh` builds a host simulator with MinGW, and
+  `sim_design.c` renders every new screen to `tools-sim/out/d_*.ppm`. The simulated clock
+  moves within a GUI loop (`g_time_creep_us`), as the board's does.
+
 ## New in 0.10.1 (screen, rides, About; no Wi-Fi)
 
 - **The screen times out with the phone connected.** Every message from the phone

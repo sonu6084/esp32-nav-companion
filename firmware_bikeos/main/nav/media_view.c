@@ -27,7 +27,7 @@
 #define TEXT_W UI_SC(290)
 
 #define COL_TRACK 0x24282D
-#define COL_PROG 0xE8EAED    // progress ring until the art gives a colour
+#define COL_PROG 0x2F80FF    // bike-os 0.11: the route blue (BOS_ROUTE) until the art gives a colour
 #define COL_VOL 0xE8EAED
 #define COL_TEXT 0x9AA0A6
 #define COL_GHOST 0xE8EAED   // icons of the buttons that have no disc
@@ -442,9 +442,9 @@ void media_view_create(lv_obj_t *parent, void (*on_back)(void))
     s_accent_for = 0;
 
     // Title, artist. The status message takes the title's place.
-    s_lbl_title = text_line(parent, &lv_font_montserrat_20, 0xFFFFFF, TITLE_Y, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    s_lbl_title = text_line(parent, &lv_font_montserrat_24, 0xFFFFFF, TITLE_Y, LV_LABEL_LONG_SCROLL_CIRCULAR);  // 0.11: was 20
     lv_label_set_text(s_lbl_title, s_title);
-    s_lbl_artist = text_line(parent, &lv_font_montserrat_14, COL_TEXT, ARTIST_Y, LV_LABEL_LONG_DOT);
+    s_lbl_artist = text_line(parent, &lv_font_montserrat_16, COL_TEXT, ARTIST_Y, LV_LABEL_LONG_DOT);  // 0.11: was 14
     lv_label_set_text(s_lbl_artist, s_artist);
     s_msg = text_line(parent, &lv_font_montserrat_14, COL_TEXT, TITLE_Y + UI_SC(6), LV_LABEL_LONG_WRAP);
     lv_label_set_text(s_msg, "");

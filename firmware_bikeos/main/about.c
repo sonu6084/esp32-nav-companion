@@ -35,7 +35,7 @@
 #include "settings.h"
 #include "sys.h"
 
-#define BIKEOS_VER "0.10.1"
+#define BIKEOS_VER "0.11"
 
 #define QMI_ADDR_A    0x6B
 #define QMI_ADDR_B    0x6A
