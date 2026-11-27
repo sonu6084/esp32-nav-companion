@@ -9,6 +9,7 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
@@ -80,6 +81,7 @@ typedef struct {
     int32_t lat[NAV_ROUTE_CHUNK_MAX];
     int32_t lon[NAV_ROUTE_CHUNK_MAX];
 } route_chunk_t;
+#define ROUTE_Q_LEN 72 // 2048 points / 31 per chunk = 67, and a little over
 static QueueHandle_t s_route_q;
 static uint8_t s_route_seq;
 static bool s_route_bad;
@@ -875,7 +877,11 @@ void app_main(void)
     s_text_q = xQueueCreate(1, sizeof(text_msg_t));
     s_nav_q = xQueueCreate(1, sizeof(nav_msg_t));
     s_call_q = xQueueCreate(1, sizeof(call_msg_t));
-    s_route_q = xQueueCreate(8, sizeof(route_chunk_t));
+    // The whole line can arrive in one burst (2048 points = 67 chunks). With 8
+    // slots a burst overflowed, a chunk was dropped, and the sequence check then
+    // threw the whole route away. ~17 KB, in PSRAM.
+    s_route_q = xQueueCreateWithCaps(ROUTE_Q_LEN, sizeof(route_chunk_t), MALLOC_CAP_SPIRAM);
+    if (!s_route_q) s_route_q = xQueueCreate(ROUTE_Q_LEN, sizeof(route_chunk_t));
     s_roads_q = xQueueCreate(16, sizeof(roads_chunk_t));
     s_traffic_q = xQueueCreate(1, sizeof(roads_chunk_t));
 
