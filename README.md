@@ -11,6 +11,8 @@ Night ride on the real device: destination set once in the app, turn-by-turn on 
 ```
 nav-esp32/
   firmware_v2/ ESP-IDF firmware (ESP32-S3-Touch-LCD-2.8C, LVGL 9, SD maps, BLE, media controls)
+  firmware_watcher/ the same firmware for the SenseCAP Watcher W1-A
+  firmware_bikeos/ bike-os: multi-app firmware for the Waveshare ESP32-S3-Touch-LCD-1.46 (round 412x412)
   app/        Android companion app (QR pairing, BLE central, location stream)
   docs/       Reference docs, pinout, Phase 1 plan
   3mf/        Enclosure models (existing)

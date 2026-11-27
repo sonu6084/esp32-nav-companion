@@ -1,0 +1,8 @@
+# Same dependencies as firmware_ws146 and firmware_watcher, fetched by the
+# component manager.
+dependencies:
+  idf: ">=5.5"
+  lvgl/lvgl: "~9.6.0"
+  espressif/esp_jpeg: "^1.3.1"
+  espressif/esp_lcd_spd2010: "^2.0.0"
+  espressif/esp_lcd_touch_spd2010: "^2.1.0"
