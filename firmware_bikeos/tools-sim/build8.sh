@@ -9,7 +9,7 @@ FL="-O1 -g -w -fsanitize=address,undefined -DLV_CONF_INCLUDE_SIMPLE -I. -Istub -
 mkdir -p obj out
 [ -f liblv.a ] || { for f in $(find $L/src -name "*.c"); do gcc $FL -c $f -o obj/$(echo $f | md5sum | cut -c1-12).o; done; ar rcs liblv.a obj/*.o; }
 gcc $FL sim8.c $B/bos_intro.c $B/home.c platform.c $B/ride.c $B/bos_faces.c $B/nav_core.c $B/app_manager.c $B/ui_theme.c $B/ui_settime.c $B/alert.c $B/cfg.c \
-    $B/weather_store.c $J/cJSON.c $B/apps/*.c $B/fonts/*.c $B/icons/*.c \
+    $B/apps/*.c $B/fonts/*.c \
     $N/map_view.c $N/nav_view.c $N/media_view.c $N/call_view.c $N/turn_edge.c $N/ui_pair.c $N/ui_common.c \
     $N/boot_view.c $N/settings.c liblv.a -o sim8 -lm
 ASAN_OPTIONS=detect_leaks=0 mkdir -p out/rides; ./sim8

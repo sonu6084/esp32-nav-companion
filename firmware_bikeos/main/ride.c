@@ -196,7 +196,7 @@ int ride_trace(int i, int32_t *lat, int32_t *lon, int max)
    while parked does not add up to distance. */
 #define HOP_M          15.0
 #define HOP_MAX_MS     60000     /* a hop slower than this is drift, not riding */
-#define GLITCH_MPS     70.0      /* 250 km/h between two fixes: a bad fix */
+#define GLITCH_MPS     45.0      /* 160 km/h between two fixes: a bad fix, whatever the gap */
 #define DERIVED_FRESH  10000     /* a hop counts as "moving now" for this long */
 #define DERIVED_MOVING_CMS 139   /* 5 km/h: below this a hop is creep / drift */
 
@@ -208,15 +208,33 @@ static uint16_t s_derived_cms, s_eff_cms;
 uint16_t ride_speed_cms(void) { return s_eff_cms; }
 static uint16_t s_last_phone_cms;
 static uint32_t s_last_fix_ms;
+static uint32_t s_fix_count;
+uint32_t ride_fix_count(void) { return s_fix_count; }
+uint16_t ride_phone_cms(void) { return s_last_phone_cms; }
 bool ride_moving_now(void)
 {
     return s_last_phone_cms >= MOVING_CMS ||
            (s_hop_ms && s_last_fix_ms - s_hop_ms < 4000 && s_derived_cms >= DERIVED_MOVING_CMS);
 }
 
-void ride_on_fix(int32_t lat, int32_t lon, uint16_t cms, uint32_t now)
+void ride_on_fix(int32_t lat, int32_t lon, uint16_t cms, bool good, uint32_t now)
 {
     uint32_t hop_cm = 0;               /* distance this fix adds, cm */
+    s_fix_count++;
+    if (!good) {
+        /* A coarse fix (a network position, tens to hundreds of meters off) jumps about:
+           counted, it added distance while parked and started and ended rides on its own.
+           It only says the phone is still there, so a ride does not end as "no fixes". */
+        if (s_state == RIDE_RECORDING) {
+            if (!s_t0_ms) s_t0_ms = now;
+            s_cur.elapsed_s = (now - s_t0_ms) / 1000;
+            s_prev_ms = now;
+            if (!s_still_since) s_still_since = now;
+        }
+        s_last_phone_cms = 0;
+        s_fast_since = 0;
+        return;
+    }
     s_last_phone_cms = cms;
     s_last_fix_ms = now;
     if (!s_have_anchor) {
@@ -226,11 +244,16 @@ void ride_on_fix(int32_t lat, int32_t lon, uint16_t cms, uint32_t now)
         uint32_t dt = now - s_a_ms;
         if (hop >= HOP_M && dt > 0) {
             double mps = hop / (dt / 1000.0);
-            if (mps > GLITCH_MPS && dt < 30000) {
+            if (mps > GLITCH_MPS) {
                 /* jumped: start again from here, count nothing */
-            } else if (hop < JUMP_MAX_M || dt < HOP_MAX_MS) {
+            } else if (dt <= HOP_MAX_MS) {
                 hop_cm = (uint32_t)lround(hop * 100.0);
-                if (dt <= HOP_MAX_MS) { s_derived_cms = (uint16_t)fmin(mps * 100.0, 65000.0); s_hop_ms = now; }
+                s_derived_cms = (uint16_t)fmin(mps * 100.0, 65000.0);
+                s_hop_ms = now;
+            } else if (mps * 100.0 >= DERIVED_MOVING_CMS) {
+                /* a long gap (a tunnel, a dropped link) crossed at riding speed: the way
+                   between counts; a slow one is drift while parked and adds nothing */
+                hop_cm = (uint32_t)lround(hop * 100.0);
             }
             s_a_lat = lat; s_a_lon = lon; s_a_ms = now;
         }

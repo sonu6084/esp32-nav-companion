@@ -17,3 +17,4 @@ void audio_init(void);
 void audio_play(snd_t s);          /* replaces whatever is playing */
 void audio_stop(void);
 bool audio_busy(void);
+bool audio_ok(void);              /* the I2S speaker came up (Settings > About) */

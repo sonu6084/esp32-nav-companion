@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
+#include <stdio.h>
 
 static const char *TAG = "sd";
 
@@ -21,6 +22,8 @@ static const char *TAG = "sd";
 #define SD_D0 16
 
 static bool s_ok;
+static sdmmc_card_t *s_card;   // bike-os: kept for Settings > About
+static int s_khz;
 
 static esp_err_t try_mount(int khz)
 {
@@ -40,8 +43,10 @@ static esp_err_t try_mount(int khz)
     slot.d2 = -1;
     slot.d3 = -1;
     slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-    sdmmc_card_t *card;
-    return esp_vfs_fat_sdmmc_mount(SD_MOUNT, &host, &slot, &mount, &card);
+    sdmmc_card_t *card = NULL;
+    esp_err_t e = esp_vfs_fat_sdmmc_mount(SD_MOUNT, &host, &slot, &mount, &card);
+    if (e == ESP_OK) { s_card = card; s_khz = khz; }
+    return e;
 }
 
 esp_err_t sdcard_init(void)
@@ -64,4 +69,15 @@ esp_err_t sdcard_init(void)
 bool sdcard_ok(void)
 {
     return s_ok;
+}
+
+// bike-os: the card for Settings > About; false with no card.
+bool sdcard_info(sdcard_info_t *out)
+{
+    if (!s_ok || !s_card) return false;
+    out->bytes = (uint64_t)s_card->csd.capacity * s_card->csd.sector_size;
+    out->sdhc = (s_card->ocr & (1u << 30)) != 0;   // OCR CCS bit: SDHC/SDXC
+    out->khz = s_khz;
+    snprintf(out->name, sizeof out->name, "%s", s_card->cid.name);
+    return true;
 }

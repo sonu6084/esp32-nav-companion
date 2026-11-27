@@ -155,7 +155,7 @@ static void sys_task(void *arg)
     }
 }
 
-void sys_init(void)
+void bos_sys_init(void)
 {
     s_booted_by_key = board_pwr_key_pressed();
     pcf_init();

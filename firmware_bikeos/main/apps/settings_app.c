@@ -3,7 +3,7 @@
  *
  *  Brightness, Volume (with a test beep), Screen off after (Never/15s/30s/1m/2m/5m),
  *  Keep screen on while navigating, Set time & date, Phone (pair status / forget),
- *  Refresh weather, About (version, battery, uptime, memory).
+ *  About: board, memory and storage, sensors, firmware (about.c).
  *  Everything is saved to NVS immediately.
  *  Keys: BOOT tap = scroll down one row   BOOT hold = scroll up
  */
@@ -17,21 +17,20 @@
 #include "cfg.h"
 #include "audio.h"
 #include "ui_settime.h"
-#include "weather_store.h"
+#include "about.h"
 #include "nav_core.h"
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #endif
 
 #define COLOR       0x9E9E9E
-#define BIKEOS_VER  "0.10"
 
 static const uint16_t TMO[] = {0, 15, 30, 60, 120, 300};
 static const char *const TMO_TXT[] = {"Never", "15 s", "30 s", "1 min", "2 min", "5 min"};
 
 static struct {
     bool alive;
-    lv_obj_t *scr, *list, *bri_val, *vol_val, *tmo_btn, *phone_lbl, *forget_btn, *about, *wx_lbl;
+    lv_obj_t *scr, *list, *bri_val, *vol_val, *tmo_btn, *phone_lbl, *forget_btn, *ab_board, *ab_usage, *ab_sensors, *ab_fw;
     lv_timer_t *tmr;
 } ui;
 
@@ -98,7 +97,6 @@ static void navon_cb(lv_event_t *e)
 }
 static void settime_cb(lv_event_t *e) { ui_settime_open(ui.scr, NULL); }
 static void forget_cb(lv_event_t *e)  { nav_core_forget_phone(); }
-static void wx_cb(lv_event_t *e)      { wx_request_refresh(); }
 
 static void refresh(void)
 {
@@ -110,22 +108,13 @@ static void refresh(void)
     if (settings_paired()) lv_obj_remove_state(ui.forget_btn, LV_STATE_DISABLED);
     else lv_obj_add_state(ui.forget_btn, LV_STATE_DISABLED);
 
-    wx_data_t w;
-    wx_get(&w);
-    if (w.valid) lv_label_set_text_fmt(ui.wx_lbl, "Last update %02d:%02d", w.obs.hour, w.obs.minute);
-    else lv_label_set_text(ui.wx_lbl, wx_state() == WX_ST_IDLE ? "No data yet" : wx_state_text(wx_state()));
-
-    uint32_t up = (uint32_t)(esp_timer_get_time() / 1000000);
-    int pct = sys_battery_pct();
-    char bat[24];
-    if (pct < 0) snprintf(bat, sizeof bat, "USB power");
-    else snprintf(bat, sizeof bat, "%d%%  (%.2f V)", pct, sys_battery_volts());
-    size_t heap = 0;
-#ifdef ESP_PLATFORM
-    heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024;
-#endif
-    lv_label_set_text_fmt(ui.about, "bike-os %s\nBattery  %s\nUp  %luh %02lum\nFree RAM  %u KB",
-                          BIKEOS_VER, bat, (unsigned long)(up / 3600), (unsigned long)(up / 60 % 60), (unsigned)heap);
+    static char buf[400];
+    about_usage(buf, sizeof buf);
+    lv_label_set_text(ui.ab_usage, buf);
+    about_sensors(buf, sizeof buf);
+    lv_label_set_text(ui.ab_sensors, buf);
+    about_firmware(buf, sizeof buf);
+    lv_label_set_text(ui.ab_fw, buf);
 }
 
 static void tick_cb(lv_timer_t *t) { if (!ui_settime_active()) refresh(); }
@@ -134,6 +123,16 @@ static lv_obj_t *value_label(lv_obj_t *r)
 {
     lv_obj_t *l = lv_label_create(r);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_20, 0);
+    return l;
+}
+
+static lv_obj_t *about_label(lv_obj_t *r)
+{
+    lv_obj_t *l = lv_label_create(r);
+    lv_obj_set_width(l, LV_PCT(100));
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_line_space(l, 3, 0);
     return l;
 }
 
@@ -203,7 +202,7 @@ static void st_create(lv_obj_t *scr, const app_t *self)
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
     lv_obj_set_width(hint, LV_PCT(100));
     lv_label_set_long_mode(hint, LV_LABEL_LONG_MODE_WRAP);
-    lv_label_set_text(hint, "Also synced from the phone and the weather server");
+    lv_label_set_text(hint, "Also synced from the phone");
 
     r = row("PHONE");
     ui.phone_lbl = lv_label_create(r);
@@ -213,14 +212,15 @@ static void st_create(lv_obj_t *scr, const app_t *self)
     lv_obj_set_style_bg_opa(ui.forget_btn, LV_OPA_30, LV_STATE_DISABLED);
     lv_obj_add_event_cb(ui.forget_btn, forget_cb, LV_EVENT_CLICKED, NULL);
 
-    r = row("WEATHER");
-    ui.wx_lbl = lv_label_create(r);
-    b = ui_pill_btn(r, LV_SYMBOL_REFRESH "  Refresh now", LV_PCT(100), 44, lv_color_hex(0x33363D));
-    lv_obj_add_event_cb(b, wx_cb, LV_EVENT_CLICKED, NULL);
-
-    r = row("ABOUT");
-    ui.about = lv_label_create(r);
-    lv_obj_set_style_text_font(ui.about, &lv_font_montserrat_16, 0);
+    /* About: four sections, the board's own figures read every second. */
+    about_open();
+    static char boardtxt[240];
+    about_board(boardtxt, sizeof boardtxt);
+    ui.ab_board = about_label(row("ABOUT " LV_SYMBOL_BULLET " BOARD"));
+    lv_label_set_text(ui.ab_board, boardtxt);
+    ui.ab_usage = about_label(row("MEMORY & STORAGE"));
+    ui.ab_sensors = about_label(row("SENSORS"));
+    ui.ab_fw = about_label(row("FIRMWARE"));
 
     refresh();
     ui.tmr = lv_timer_create(tick_cb, 1000, NULL);
@@ -230,6 +230,7 @@ static void st_destroy(void)
 {
     ui_settime_close(false);
     if (ui.tmr) lv_timer_delete(ui.tmr);
+    about_close();
     memset(&ui, 0, sizeof ui);
 }
 

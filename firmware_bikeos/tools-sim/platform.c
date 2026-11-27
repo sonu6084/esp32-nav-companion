@@ -144,7 +144,7 @@ bool nav_ble_call_ready(void) { return true; }
 void nav_ble_disconnect(void) {}
 void nav_ble_forget_current(void) {}
 
-/* ---------------- bike-os sys / audio / weather ---------------- */
+/* ---------------- bike-os sys / audio ---------------- */
 uint32_t g_events;
 static int64_t base_s = ((14 * 60) + 32) * 60 + 5;
 static datetime_t base_d = {2026, 11, 26, 4, 0, 0, 0};
@@ -165,4 +165,14 @@ void audio_init(void) {}
 void audio_play(snd_t s) { g_snd = s; }
 void audio_stop(void) { g_snd = 0; }
 bool audio_busy(void) { return false; }
-void wx_request_refresh(void) {}
+
+/* ---------------- bike-os Settings > About (about.c needs the ESP APIs) ---------------- */
+#include "about.h"
+void about_open(void) {}
+void about_close(void) {}
+void about_board(char *o, size_t n)    { snprintf(o, n, "Waveshare ESP32-S3-Touch-LCD-1.46 (simulator)"); }
+void about_usage(char *o, size_t n)    { snprintf(o, n, "RAM -\nSD card: none"); }
+void about_sensors(char *o, size_t n)  { snprintf(o, n, "Battery -\nIMU -"); }
+void about_firmware(char *o, size_t n) { snprintf(o, n, "bike-os (simulator)"); }
+bool sdcard_info(sdcard_info_t *out)   { (void)out; return false; }
+bool audio_ok(void) { return true; }
