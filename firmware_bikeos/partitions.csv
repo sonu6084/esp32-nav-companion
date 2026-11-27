@@ -1,0 +1,7 @@
+# bike-os v0.5 — Waveshare 1.46 (16 MB flash). firmware_ws146's table + a FAT
+# partition for saved rides (journey tracking), mounted at /rides.
+# Name,   Type, SubType, Offset,   Size,  Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  4M,
+rides,    data, fat,     0x410000, 2M,
