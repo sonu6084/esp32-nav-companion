@@ -181,7 +181,6 @@ int main(void)
     am_open(am_find("Alarm")); run(400); key(SYS_EVT_BOOT_SHORT, 400); shot("v14_alarm_editor"); key(SYS_EVT_BOOT_SHORT, 400);
     shot("v15_alarm_list");
     key(SYS_EVT_PWR_SHORT, 500);
-    am_open(am_find("Weather")); run(500); shot("v16_weather");
     key(SYS_EVT_PWR_SHORT, 500);
     am_open(am_find("Settings")); run(500); shot("v17_settings");
     nav_core_forget_phone(); run(200);

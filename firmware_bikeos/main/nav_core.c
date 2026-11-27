@@ -558,7 +558,9 @@ static void process_events(void)
 {
     app_ev_t ev;
     while (xQueueReceive(s_ev_q, &ev, 0) == pdTRUE) {
-        note_activity();
+        // bike-os: the phone connecting or a command wakes the screen; the keep-alive
+        // ping does not, or a connected phone would hold the screen on for ever.
+        if (ev.type == EV_LINK_UP || (ev.type == EV_CMD && ev.code != NAV_CMD_PING)) note_activity();
         switch (ev.type) {
         case EV_LINK_UP:
             s_connected = true;
@@ -589,7 +591,20 @@ static void process_events(void)
     }
     nav_msg_t nm;
     if (xQueueReceive(s_nav_q, &nm, 0) == pdTRUE) {
-        note_activity();
+        // bike-os: the phone sends STATE every second, drive or not. Only a drive
+        // starting or its next turn changing wakes the screen (keep_awake holds it on
+        // during a drive when "Keep screen on during navigation" is set).
+        static bool nav_was_active;
+        static uint8_t nav_last_maneuver;
+        static uint16_t nav_last_dist;
+        if (nm.have_state) {
+            bool active = nm.st.flags & NAV_F_ACTIVE;
+            bool new_turn = active && (nm.st.maneuver != nav_last_maneuver || nm.st.dist_m > nav_last_dist + 50);
+            if ((active && !nav_was_active) || new_turn) note_activity();
+            nav_was_active = active;
+            nav_last_maneuver = nm.st.maneuver;
+            nav_last_dist = nm.st.dist_m;
+        }
         if (nm.have_street) nav_view_update(NULL, nm.street);
         if (nm.have_state) {
             nav_view_update(&nm.st, NULL);
@@ -626,14 +641,21 @@ static void process_events(void)
     if (xQueueReceive(s_text_q, &tm, 0) == pdTRUE) media_view_set_text(tm.title, tm.artist);
     nav_media_state_t ms;
     if (xQueueReceive(s_media_q, &ms, 0) == pdTRUE) {
-        note_activity();
+        // bike-os: a new track or play/pause wakes the screen; the position the phone
+        // sends every second does not.
+        static uint8_t media_last_flags = 0xFF;
+        static uint16_t media_last_art = 0xFFFF;
+        if ((ms.flags & NAV_MEDIA_F_PLAYING) != (media_last_flags & NAV_MEDIA_F_PLAYING) ||
+            (ms.art_id != media_last_art && media_last_art != 0xFFFF)) note_activity();
+        media_last_flags = ms.flags;
+        media_last_art = ms.art_id;
         media_view_set_state(&ms);
     }
     nav_position_t p;
     if (xQueueReceive(s_pos_q, &p, 0) == pdTRUE && valid_fix(&p)) {
         // bike-os: the recorder first; it also measures speed from position
         // change, which the speedometer uses when the phone sends none.
-        ride_on_fix(p.lat_e7, p.lon_e7, p.speed_cms, now_ms());
+        ride_on_fix(p.lat_e7, p.lon_e7, p.speed_cms, p.fix != 0, now_ms());
         map_view_set_fix(p.lat_e7, p.lon_e7, ride_speed_cms(), p.cog_cdeg);
     }
     call_msg_t cm;

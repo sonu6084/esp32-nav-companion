@@ -27,7 +27,6 @@
 #include "audio.h"
 #include "app_manager.h"
 #include "nav_core.h"
-#include "weather_net.h"
 #include "ride.h"
 #include "esp_vfs_fat.h"
 
@@ -114,7 +113,7 @@ void app_main(void)
     sdcard_init();                                 /* optional: no card = minimal BLE display */
     board_boot_button_init();
 
-    sys_init();                                    /* keys, battery, RTC (shared I2C bus) */
+    bos_sys_init();                                  /* keys, battery, RTC (shared I2C bus) */
     rtc_seed_from_build_time();
     audio_init();
     rides_mount();
@@ -124,7 +123,6 @@ void app_main(void)
 
     /* boot intro (main/assets/intro.gif), then the home screen */
     bos_intro_play(lv_screen_active(), boot_done);
-    weather_net_init();
 
     xTaskCreatePinnedToCore(gui_task, "gui", 10 * 1024, NULL, 5, NULL, 1);
 }

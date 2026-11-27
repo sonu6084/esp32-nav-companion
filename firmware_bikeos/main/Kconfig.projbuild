@@ -58,34 +58,13 @@ endmenu
 
 menu "bike-os"
 
-    config BIKEOS_WIFI_SSID
-        string "Wi-Fi SSID (e.g. your phone hotspot)"
-        default ""
+    config BIKEOS_DEBUG_DIAG
+        bool "Log a diagnostic line every 5 s (WARN level)"
+        default n
         help
-            Used by the Weather app to reach Open-Meteo. Leave empty to disable Wi-Fi.
-
-    config BIKEOS_WIFI_PASS
-        string "Wi-Fi password"
-        default ""
-
-    config BIKEOS_LAT
-        string "Weather latitude"
-        default "28.6139"
-
-    config BIKEOS_LON
-        string "Weather longitude"
-        default "77.2090"
-
-    config BIKEOS_WEATHER_REFRESH_MIN
-        int "Auto refresh interval (minutes)"
-        range 10 240
-        default 30
-
-    config BIKEOS_TIME_FROM_WEATHER
-        bool "Correct the RTC from the weather server's local time"
-        default y
-        help
-            Open-Meteo returns local time with each reply. If the RTC is off by more
-            than 2 minutes it is set from that (minute precision).
+            Fixes received, phone and measured speed, moving, the ride's state and
+            distance, rides storage, and the screen's idle time, timeout and what
+            keeps it awake. Dev aid only: the USB-serial console can block when no
+            reader is attached.
 
 endmenu

@@ -581,8 +581,8 @@ void nav_view_init(void)
     lv_obj_set_pos(s_card, 0, 0);
     lv_obj_set_style_bg_color(s_card, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_card, LV_OPA_COVER, 0);
-    lv_obj_remove_flag(s_card, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_remove_flag(s_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_clickable(s_card, false);
+    lv_obj_set_scrollable(s_card, false);
     lv_obj_add_event_cb(s_card, card_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
     s_card_dist = card_label(&lv_font_montserrat_48, COL_ICON, CARD_DIST_Y, CARD_STREET_W, 1);
     s_card_street = card_label(&lv_font_montserrat_28, COL_STREET, CARD_STREET_Y, CARD_STREET_W, 2);

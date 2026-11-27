@@ -17,7 +17,7 @@
 #define SYS_EVT_BOOT_LONG   (1u << 2)   /* BOOT key held ~0.8 s      -> app secondary */
 #define SYS_EVT_SHUTDOWN    (1u << 3)   /* PWR key held 3 s          -> powering off  */
 
-void     sys_init(void);              /* after board_i2c_init(); starts the key/battery/RTC task */
+void     bos_sys_init(void);              /* after board_i2c_init(); starts the key/battery/RTC task */
 uint32_t sys_take_events(void);       /* atomically fetch-and-clear pending events */
 
 void     sys_get_time(datetime_t *out);   /* cached RTC time, refreshed every 500 ms */

@@ -8,7 +8,6 @@
 
 extern const app_t app_clock;
 extern const app_t app_stopwatch;
-extern const app_t app_weather;
 extern const app_t app_timer;
 extern const app_t app_alarm;
 extern const app_t app_nav;
@@ -25,7 +24,6 @@ const app_t *const g_apps[] = {
     &app_nav,
     &app_rides,
     &app_alarm,
-    &app_weather,
     &app_music,
     &app_settings,
 };

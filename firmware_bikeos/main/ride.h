@@ -14,8 +14,8 @@
 
 #define RIDE_MAX_SAVED      30
 #define RIDE_MAX_POINTS     4000
-#define RIDE_AUTO_START_KMH 15
-#define RIDE_AUTO_START_S   20
+#define RIDE_AUTO_START_KMH 10
+#define RIDE_AUTO_START_S   15
 #define RIDE_AUTO_STOP_S    600   /* parked this long ends a ride (not while navigating) */
 #define RIDE_MIN_SAVE_M     50
 
@@ -39,13 +39,17 @@ typedef struct {
 } ride_summary_t;   /* stored as-is in index.bin: do not change the layout */
 
 void ride_init(const char *dir);   /* "/rides" on the device, a folder on the host */
-void ride_on_fix(int32_t lat_e7, int32_t lon_e7, uint16_t speed_cms, uint32_t now_ms);
+/* good: the phone's accuracy is within 50 m (its fix flag). Only good fixes measure
+   distance, motion and the trace; every fix counts as the phone being there. */
+void ride_on_fix(int32_t lat_e7, int32_t lon_e7, uint16_t speed_cms, bool good, uint32_t now_ms);
 void ride_tick(uint32_t now_ms, bool navigating);
 
 void ride_start(void);
 ride_result_t ride_stop(bool save);
 bool ride_storage_ok(void);                 /* false: the "rides" partition is not writable */
 uint16_t ride_speed_cms(void);
+uint32_t ride_fix_count(void);              /* fixes seen since boot (diagnostics) */
+uint16_t ride_phone_cms(void);              /* the speed the phone sent with the last fix */
 bool ride_moving_now(void);                 /* moving at the last fix (for the compass heading) */              /* phone speed, or from position change when the phone sends none */
 ride_state_t ride_state(void);
 const ride_summary_t *ride_current(void);   /* live figures while recording, else the last ride */

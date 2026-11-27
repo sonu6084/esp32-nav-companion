@@ -12,6 +12,10 @@
 #include "settings.h"
 #include "cfg.h"
 #include "home.h"
+#include "ride.h"
+#include "nav_core.h"
+#include "sdkconfig.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "am";
 
@@ -376,13 +380,10 @@ static void catcher_cb(lv_event_t *e)
     if (s_wake_catcher && !s_off) { lv_obj_delete_async(s_wake_catcher); s_wake_catcher = NULL; }
 }
 
-static void screen_power_tick(void)
+/* Backlight off; the next touch (caught, so it reaches no app) or key wakes it. */
+static void screen_off_now(void)
 {
-    uint16_t tmo = cfg_screen_timeout_s();
-    if (s_off || tmo == 0 || alert_active()) return;
-    for (int i = 0; i < g_app_count; i++)
-        if (g_apps[i]->ready && g_apps[i]->keep_awake && g_apps[i]->keep_awake()) { lv_display_trigger_activity(NULL); return; }
-    if (lv_display_get_inactive_time(NULL) < (uint32_t)tmo * 1000) return;
+    if (s_off) return;
     s_off = true;
     sys_set_backlight(0);
     if (!s_cur && !s_on_home) {          /* menu: wake up on the home screen */
@@ -398,6 +399,43 @@ static void screen_power_tick(void)
     lv_obj_add_event_cb(s_wake_catcher, catcher_cb, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(s_wake_catcher, catcher_cb, LV_EVENT_PRESS_LOST, NULL);
 }
+
+/* The app keeping the screen on, or NULL. */
+static const app_t *awake_holder(void)
+{
+    for (int i = 0; i < g_app_count; i++)
+        if (g_apps[i]->ready && g_apps[i]->keep_awake && g_apps[i]->keep_awake()) return g_apps[i];
+    return NULL;
+}
+
+static void screen_power_tick(void)
+{
+    uint16_t tmo = cfg_screen_timeout_s();
+    if (s_off || tmo == 0 || alert_active()) return;
+    if (awake_holder()) { lv_display_trigger_activity(NULL); return; }
+    if (lv_display_get_inactive_time(NULL) < (uint32_t)tmo * 1000) return;
+    screen_off_now();
+}
+
+#if CONFIG_BIKEOS_DEBUG_DIAG
+static void diag_tick(void)
+{
+    static uint32_t last_fixes;
+    uint32_t fixes = ride_fix_count();
+    const app_t *hold = awake_holder();
+    const ride_summary_t *r = ride_current();
+    ESP_LOGW("diag", "fixes+%u phone=%ucm/s eff=%ucm/s moving=%d nav=%d conn=%d | ride=%d dist=%um pts=%u store=%d | "
+             "screen off=%d idle=%us tmo=%us hold=%s alert=%d home=%d | ram int=%u dma=%u big=%u",
+             (unsigned)(fixes - last_fixes), ride_phone_cms(), ride_speed_cms(), ride_moving_now(),
+             nav_core_navigating(), nav_core_connected(), (int)ride_state(), (unsigned)r->distance_m,
+             (unsigned)r->points, ride_storage_ok(), s_off,
+             (unsigned)(lv_display_get_inactive_time(NULL) / 1000), cfg_screen_timeout_s(),
+             hold ? hold->name : "-", alert_active(), s_on_home,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    last_fixes = fixes;
+}
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Event pump: hardware keys -> alert / navigation / app                */
@@ -442,10 +480,11 @@ static void pump_cb(lv_timer_t *t)
         ev = 0;
     }
 
-    /* PWR tap: app -> menu -> home */
+    /* PWR tap: app -> menu -> home -> screen off */
     if (ev & SYS_EVT_PWR_SHORT) {
         if (s_cur) am_home();
         else if (!s_on_home) am_show_home();
+        else screen_off_now();
     }
     if (ev & (SYS_EVT_BOOT_SHORT | SYS_EVT_BOOT_LONG)) {
         app_key_t k = (ev & SYS_EVT_BOOT_LONG) ? APP_KEY_SECONDARY : APP_KEY_PRIMARY;
@@ -466,6 +505,9 @@ static void pump_cb(lv_timer_t *t)
     }
     if (!s_cur && !s_on_home && (n % 10) == 0) refresh_menu_status();   /* ~every 0.5 s */
     if (s_on_home && (n % 4) == 0) home_refresh();                       /* 200 ms: seconds ring */
+#if CONFIG_BIKEOS_DEBUG_DIAG
+    if (n % 100 == 0) diag_tick();                                       /* 5 s */
+#endif
     if (!s_cur && !s_on_home && !s_off &&
         lv_display_get_inactive_time(NULL) > MENU_IDLE_HOME_MS) am_show_home();
     n++;

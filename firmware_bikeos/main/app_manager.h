@@ -2,7 +2,7 @@
 /*
  * App framework.
  *
- * Every module (stopwatch, timer, clock, nav, alarm, weather, ...) is an app_t.
+ * Every module (stopwatch, timer, clock, nav, alarm, rides, ...) is an app_t.
  * Add one by writing apps/<name>.c that exports `const app_t app_<name>` and
  * listing it in apps/registry.c — nothing else changes.
  *

@@ -134,3 +134,6 @@ void audio_play(snd_t s)
 
 void audio_stop(void) { s_req = SND_NONE; }
 bool audio_busy(void) { return s_busy; }
+
+/* bike-os: the speaker came up (Settings > About). */
+bool audio_ok(void) { return s_task != NULL; }
