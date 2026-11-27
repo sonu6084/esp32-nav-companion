@@ -846,7 +846,7 @@ void nav_core_poll(void)
     if (s_phone_dirty) sync_rtc_from_phone(s_phone_epoch);   // before process_events clears it
     process_events();
     sleep_tick();
-    ride_tick(t, nav_view_active());  // bike-os: auto start/stop
+    ride_tick(now_ms(), nav_view_active());  // bike-os: auto start/stop; now, not the loop's t: the fixes above were stamped after it
     map_view_tick();
     media_view_tick();
     // Orange rim on the side of the next turn; only over the map/media pages.

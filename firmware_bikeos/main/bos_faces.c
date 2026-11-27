@@ -7,10 +7,12 @@
 #include "ble_service.h"
 #include "map_view.h"
 #include "ride.h"
+#include "sys.h"
+#include "bos_style.h"   /* 0.11 look */
 
 #define W        412
 #define C        206                 /* centre */
-#define YEL      0xFFC107            /* Beeline-style accent */
+#define YEL      BOS_GO              /* 0.11: green is the accent (was amber 0xFFC107) */
 #define GREY     0x9AA0A6
 #define TRACK    0x3C4043
 
@@ -125,19 +127,6 @@ static void icon_flag(lv_layer_t *l, int x, int y, int r, uint32_t col)
     lv_area_t a = {x - r * 6 / 10, y - r, x + r * 7 / 10, y};
     lv_draw_rect(l, &d, &a);
 }
-static void icon_route(lv_layer_t *l, int x, int y, uint32_t col)   /* two stops and a winding path */
-{
-    arc(l, x - 8, y - 8, 4, 2, 0, 360, col, false);
-    disc(l, x + 9, y + 9, 3, col);
-    line(l, x - 8, y - 3, x - 2, y + 2, 2, col);
-    line(l, x - 2, y + 2, x + 4, y + 1, 2, col);
-    line(l, x + 4, y + 1, x + 8, y + 6, 2, col);
-}
-static void icon_speed(lv_layer_t *l, int x, int y, uint32_t col)   /* little gauge */
-{
-    arc(l, x, y + 3, 11, 2, 180, 360, col, true);
-    line(l, x, y + 3, x + 6, y - 4, 2, col);
-}
 static void check_badge(lv_layer_t *l, int x, int y)
 {
     disc(l, x, y, 18, YEL);
@@ -231,7 +220,7 @@ int32_t bos_key_stops(void)
     return (int32_t)((S.next * 64u + S.count) * 65536u + (S.dist_m / 100u) % 65536u) & 0x7FFFFFFF;
 }
 
-/* ------------------------------ compass + odometer ------------------------------ */
+/* ------------------------------ heading ------------------------------ */
 /* The heading is the GPS course from the phone: the board has no magnetometer
    (QMI8658 = accelerometer + gyro), so it only means something while moving.
    Held for HEADING_HOLD_MS after slowing down so a red light does not blank it. */
@@ -249,71 +238,172 @@ static bool heading_ok(const bos_face_ctx_t *c)
     return s_head_ok_ms && t - s_head_ok_ms < HEADING_HOLD_MS;
 }
 
+static const char *const POINTS8[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+
+static int text_w(const char *s, const lv_font_t *f)
+{
+    lv_point_t sz;
+    lv_text_get_size(&sz, s, f, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return sz.x;
+}
+
+/* [s] in [f] with its glyphs sitting on [base], left edge at [x] */
+static void text_base(lv_layer_t *l, const char *s, const lv_font_t *f, uint32_t col, int x, int base)
+{
+    int top = base - (f->line_height - f->base_line);
+    lv_draw_label_dsc_t d;
+    lv_draw_label_dsc_init(&d);
+    d.text = s;
+    d.font = f;
+    d.color = lv_color_hex(col);
+    lv_area_t a = {x, top, x + text_w(s, f) + 4, top + f->line_height};
+    lv_draw_label(l, &d, &a);
+}
+
+/* a road sign: white disc, red ring, the number */
+static void limit_sign(lv_layer_t *l, int x, int y, int r, uint16_t lim)
+{
+    disc(l, x, y, r, 0xFFFFFF);
+    arc(l, x, y, r - 2, 5, 0, 360, BOS_LIMIT, false);
+    char b[8];
+    snprintf(b, sizeof b, "%u", lim);
+    CTEXT(l, b, lim >= 100 ? &lv_font_montserrat_20 : &lv_font_montserrat_24, 0x000000, x, y, 2 * r);
+}
+
+/* a ring of ticks turned heading-up, N in red; dim when the heading is not known */
+static void compass_ring(lv_layer_t *l, float hd, bool ok, int r_out, int r_letters)
+{
+    for (int deg = 0; deg < 360; deg += 10) {
+        if (deg % 90 == 0) continue;                    /* letters instead */
+        float a = (deg - hd - 90.0f) * (float)M_PI / 180.0f;
+        float ca = cosf(a), sa = sinf(a);
+        bool major = deg % 30 == 0;
+        int r0 = r_out - (major ? 14 : 8);
+        line(l, C + ca * r0, C + sa * r0, C + ca * r_out, C + sa * r_out, major ? 3 : 2,
+             !ok ? BOS_TRACK : major ? 0xFFFFFF : 0x5F6670);
+    }
+    static const char *const card[4] = {"N", "E", "S", "W"};
+    for (int i = 0; i < 4; i++) {
+        /* the letter at the top is the heading letter under the marker, drawn large by the
+           face; the one at the bottom would sit on the page dots: both are left out */
+        float rel = fmodf(i * 90 - hd + 720.0f, 360.0f);
+        if (rel < 25.0f || rel > 335.0f || fabsf(rel - 180.0f) < 25.0f) continue;
+        float a = (i * 90 - hd - 90.0f) * (float)M_PI / 180.0f;
+        CTEXT(l, card[i], &lv_font_montserrat_20, !ok ? 0x4A5058 : i == 0 ? BOS_NORTH : 0xFFFFFF,
+              C + (int)(cosf(a) * r_letters), C + (int)(sinf(a) * r_letters), 40);
+    }
+}
+
+/* the fixed marker at the top: where you are heading */
+static void heading_marker(lv_layer_t *l, uint32_t col)
+{
+    lv_draw_triangle_dsc_t t;
+    lv_draw_triangle_dsc_init(&t);
+    t.color = lv_color_hex(col);
+    t.p[0].x = C - 10; t.p[0].y = 6;
+    t.p[1].x = C + 10; t.p[1].y = 6;
+    t.p[2].x = C;      t.p[2].y = 24;
+    lv_draw_triangle(l, &t);
+}
+
+/* ------------------------------ cruise (0.11) ------------------------------ */
+/* Speed in the 120 px digits inside a heading-up compass ring, the limit sign beside
+   it, the clock and the board's battery under it. Red over the limit. */
+void bos_draw_cruise(lv_layer_t *l, const bos_face_ctx_t *c)
+{
+    bool ok = heading_ok(c);
+    float hd = ok ? s_head_cdeg / 100.0f : 0.0f;
+    compass_ring(l, hd, ok, 199, 178);
+    heading_marker(l, ok ? BOS_ROUTE : BOS_TRACK);
+
+    char b[24];
+    int deg = ((int)lroundf(hd)) % 360;
+    CTEXT(l, ok ? POINTS8[(deg * 2 + 45) / 90 % 8] : "--", &lv_font_montserrat_28, ok ? 0xFFFFFF : BOS_MUTED, C, 84, 120);
+
+    bool over = c->live && c->limit && c->speed > c->limit;
+    if (c->live) snprintf(b, sizeof b, "%d", c->speed);
+    else snprintf(b, sizeof b, "--");
+    const lv_font_t *nf = c->live ? BOS_FONT_HUGE : &lv_font_montserrat_48;
+    int wn = text_w(b, nf);
+    text_base(l, b, nf, over ? BOS_LIMIT : BOS_TEXT, C - wn / 2, 252);
+    CTEXT(l, c->mph ? "mph" : "km/h", &lv_font_montserrat_20, BOS_MUTED, C, 282, 120);
+
+    if (c->limit) limit_sign(l, C + 122, 196, 27, c->limit);
+
+    /* clock and the board's battery */
+    int pct = sys_battery_pct();
+    char bat[16];
+    if (pct < 0) snprintf(bat, sizeof bat, "USB");
+    else snprintf(bat, sizeof bat, "%d%%", pct);
+    const lv_font_t *sf = &lv_font_montserrat_20;
+    if (c->clock_epoch) fmt_clock(b, sizeof b, c->clock_epoch, c->clock_24h);
+    else b[0] = 0;
+    int wc = b[0] ? text_w(b, sf) : 0, wb = text_w(bat, &lv_font_montserrat_16) + 34, gap = b[0] ? 18 : 0;
+    int x0 = C - (wc + gap + wb) / 2, yb = 334;
+    if (b[0]) text_base(l, b, sf, BOS_SOFT, x0, yb + 7);
+    int px = x0 + wc + gap;
+    lv_draw_rect_dsc_t pill;
+    lv_draw_rect_dsc_init(&pill);
+    pill.radius = LV_RADIUS_CIRCLE;
+    pill.bg_color = lv_color_hex(0x16191E);
+    pill.bg_opa = LV_OPA_COVER;
+    lv_area_t pa = {px, yb - 14, px + wb, yb + 14};
+    lv_draw_rect(l, &pill, &pa);
+    /* battery glyph: a body with a fill to the charge */
+    box(l, px + 10, yb - 6, px + 26, yb + 6, 2, BOS_SOFT);
+    int fill = pct < 0 ? 12 : pct * 12 / 100;
+    if (fill > 0) {
+        lv_draw_rect_dsc_t f;
+        lv_draw_rect_dsc_init(&f);
+        f.bg_color = lv_color_hex(pct >= 0 && pct <= 20 ? BOS_LIMIT : BOS_GO);
+        f.bg_opa = LV_OPA_COVER;
+        lv_area_t fa = {px + 12, yb - 4, px + 12 + fill, yb + 4};
+        lv_draw_rect(l, &f, &fa);
+    }
+    text_base(l, bat, &lv_font_montserrat_16, BOS_SOFT, px + 30, yb + 6);
+}
+
+int32_t bos_key_cruise(const bos_face_ctx_t *c)
+{
+    bool ok = heading_ok(c);
+    uint32_t h = ok ? s_head_cdeg / 200u + 1u : 0u;          /* every 2 degrees */
+    uint32_t k = (uint32_t)(c->live ? c->speed + 1 : 0);
+    k = k * 257u + c->limit;
+    k = k * 181u + h;
+    k = k * 1440u + c->clock_epoch / 60 % 1440;
+    k = k * 102u + (uint32_t)(sys_battery_pct() + 1);
+    return (int32_t)(k & 0x7FFFFFFF);
+}
+
+/* ------------------------------ compass (0.11) ------------------------------ */
 void bos_draw_track(lv_layer_t *l, const bos_face_ctx_t *c)
 {
     bool ok = heading_ok(c);
     float hd = ok ? s_head_cdeg / 100.0f : 0.0f;        /* heading-up ring; north-up when unknown */
-    for (int deg = 0; deg < 360; deg += 5) {
-        float a = (deg - hd - 90.0f) * (float)M_PI / 180.0f;
-        float ca = cosf(a), sa = sinf(a);
-        bool major = deg % 30 == 0;
-        int r0 = major ? 180 : 188, r1 = 198;
-        if (deg % 90 == 0) continue;                    /* letters instead */
-        line(l, C + ca * r0, C + sa * r0, C + ca * r1, C + sa * r1, major ? 3 : 2,
-             !ok ? 0x3C4043 : major ? 0xFFFFFF : 0x80868B);
-    }
-    static const char *const card[4] = {"N", "E", "S", "W"};
-    for (int i = 0; i < 4; i++) {
-        float a = (i * 90 - hd - 90.0f) * (float)M_PI / 180.0f;
-        CTEXT(l, card[i], &lv_font_montserrat_20, !ok ? 0x5F6368 : i == 0 ? 0xFF5252 : 0xFFFFFF,
-              C + (int)(cosf(a) * 186), C + (int)(sinf(a) * 186), 40);
-    }
-    /* fixed marker: where you are heading */
-    lv_draw_triangle_dsc_t t;
-    lv_draw_triangle_dsc_init(&t);
-    t.color = lv_color_hex(0xFF3B30);
-    t.p[0].x = C - 11; t.p[0].y = 8;
-    t.p[1].x = C + 11; t.p[1].y = 8;
-    t.p[2].x = C;      t.p[2].y = 28;
-    if (ok) lv_draw_triangle(l, &t);
+    compass_ring(l, hd, ok, 199, 176);
+    heading_marker(l, ok ? BOS_NORTH : BOS_TRACK);
 
-    static const char *const pts[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
-    int deg = ((int)lroundf(hd)) % 360;
     char b[24];
+    int deg = ((int)lroundf(hd)) % 360;
     if (ok) {
         snprintf(b, sizeof b, "%d\xC2\xB0", deg);
-        CTEXT(l, b, &lv_font_montserrat_32, YEL, C, 74, 160);
-        CTEXT(l, pts[(deg * 2 + 45) / 90 % 8], &lv_font_montserrat_20, YEL, C, 104, 80);
+        int w = text_w(b, BOS_FONT_BIG);
+        text_base(l, b, BOS_FONT_BIG, BOS_TEXT, C - w / 2 + 10, 236);
+        CTEXT(l, POINTS8[(deg * 2 + 45) / 90 % 8], &lv_font_montserrat_28, BOS_GO, C, 268, 100);
     } else {
-        CTEXT(l, "--\xC2\xB0", &lv_font_montserrat_32, GREY, C, 74, 160);
-        CTEXT(l, "Ride to see heading", &lv_font_montserrat_16, GREY, C, 106, 220);
+        CTEXT(l, "--\xC2\xB0", &lv_font_montserrat_48, BOS_MUTED, C, 196, 160);
+        CTEXT(l, "Ride to see heading", &lv_font_montserrat_16, BOS_MUTED, C, 252, 220);
     }
+
+    /* the distance: the ride's while recording, else the trip since power-on */
     bool rec = ride_state() == RIDE_RECORDING;
-    CTEXT(l, rec ? "RIDE" : "TRIP", &lv_font_montserrat_16, rec ? 0xFF3B30 : GREY, C, 150, 80);
-
-    /* odometer: the ride's distance while recording, else the trip since power-on */
-    double km = ride_state() == RIDE_RECORDING ? ride_current()->distance_m / 1000.0 : c->trip_m / 1000.0;
+    double km = rec ? ride_current()->distance_m / 1000.0 : c->trip_m / 1000.0;
     if (c->mph) km = km / 1.609344;
-    long tenths = lround(km * 10.0) % 10000;
-    if (tenths < 0) tenths = 0;
-    char dg[12];
-    snprintf(dg, sizeof dg, "%04ld", tenths);
-    const int bw = 52, bh = 66, gap = 6, x0 = C - (3 * bw + 2 * gap + 8 + 36) / 2, y0 = C - bh / 2 + 4;
-    for (int i = 0; i < 3; i++) {
-        int x = x0 + i * (bw + gap);
-        box(l, x, y0, x + bw, y0 + bh, 6, 0xFFFFFF);
-        char d1[2] = {dg[i], 0};
-        CTEXT(l, d1, &lv_font_montserrat_48, 0xFFFFFF, x + bw / 2, y0 + bh / 2, bw);
-    }
-    int xs = x0 + 3 * (bw + gap) + 2;
-    box(l, xs, y0, xs + 30, y0 + 36, 4, 0xFFFFFF);
-    char d2[2] = {dg[3], 0};
-    CTEXT(l, d2, &lv_font_montserrat_24, 0xFFFFFF, xs + 15, y0 + 18, 30);
-    CTEXT(l, c->mph ? "mi" : "km", &lv_font_montserrat_20, 0xFFFFFF, xs + 15, y0 + 54, 40);
-
+    snprintf(b, sizeof b, "%s  %.1f %s", rec ? "RIDE" : "TRIP", km, c->mph ? "mi" : "km");
+    CTEXT(l, b, &lv_font_montserrat_20, rec ? BOS_LIMIT : BOS_SOFT, C, 312, 240);
     if (c->clock_epoch) {
         fmt_clock(b, sizeof b, c->clock_epoch, c->clock_24h);
-        CTEXT(l, b, &lv_font_montserrat_32, 0xFFFFFF, C, 292, 220);
+        CTEXT(l, b, &lv_font_montserrat_16, BOS_MUTED, C, 344, 160);
     }
 }
 int32_t bos_key_track(const bos_face_ctx_t *c)
@@ -329,40 +419,65 @@ int32_t bos_key_track(const bos_face_ctx_t *c)
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 static uint32_t s_end_tap_ms;
 
+/* one cell of the 2 x 2 grid: a label, a big value and its unit */
+static void stat_cell(lv_layer_t *l, int cx, int ytop, const char *label, const char *val, const char *unit)
+{
+    CTEXT(l, label, &lv_font_montserrat_14, BOS_MUTED, cx, ytop, 140);
+    const lv_font_t *vf = &lv_font_montserrat_40, *uf = &lv_font_montserrat_16;
+    int wv = text_w(val, vf), wu = unit[0] ? text_w(unit, uf) : 0, gap = unit[0] ? 4 : 0;
+    int x0 = cx - (wv + gap + wu) / 2, base = ytop + 46;
+    text_base(l, val, vf, BOS_TEXT, x0, base);
+    if (unit[0]) text_base(l, unit, uf, BOS_SOFT, x0 + wv + gap, base);
+}
+
 void bos_draw_ride(lv_layer_t *l, const bos_face_ctx_t *c)
 {
     bool rec = ride_state() == RIDE_RECORDING, saved = ride_just_saved(now_ms());
     if (!rec && !saved) {                                  /* Start ride */
-        arc(l, C, 128, 22, 3, 0, 360, 0xFFFFFF, false);
-        disc(l, C, 128, 10, 0xFFFFFF);
-        CTEXT(l, "Start", &lv_font_montserrat_40, 0xFFFFFF, C, 196, 260);
-        CTEXT(l, "ride", &lv_font_montserrat_40, 0xFFFFFF, C, 242, 260);
-        CTEXT(l, "Tap to record", &lv_font_montserrat_16, GREY, C, 306, 240);
+        arc(l, C, 150, 44, 4, 0, 360, BOS_GO, false);
+        lv_draw_triangle_dsc_t t;
+        lv_draw_triangle_dsc_init(&t);
+        t.color = lv_color_hex(BOS_GO);
+        t.p[0].x = C - 12; t.p[0].y = 128;
+        t.p[1].x = C - 12; t.p[1].y = 172;
+        t.p[2].x = C + 22; t.p[2].y = 150;
+        lv_draw_triangle(l, &t);
+        CTEXT(l, "Start ride", &lv_font_montserrat_32, BOS_TEXT, C, 236, 280);
+        CTEXT(l, "Tap to record", &lv_font_montserrat_16, BOS_MUTED, C, 276, 240);
         return;
     }
     const ride_summary_t *r = ride_current();
-    char b[40];
+    char b[40], v[16];
+    /* header */
     if (rec) {
-        disc(l, C - 52, 92, 7, 0xFF3B30);
         int s = (int)r->elapsed_s;
-        snprintf(b, sizeof b, "REC %d:%02d:%02d", s / 3600, s / 60 % 60, s % 60);
-        text(l, b, &lv_font_montserrat_20, 0xFFFFFF, C - 38, 92, 200, LV_TEXT_ALIGN_LEFT);
+        snprintf(b, sizeof b, "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60);
+        int w = text_w(b, &lv_font_montserrat_16);
+        disc(l, C - w / 2 - 12, 74, 6, BOS_LIMIT);
+        CTEXT(l, b, &lv_font_montserrat_16, BOS_TEXT, C + 4, 74, w + 8);
     }
-    const int xi = C - 92, xt = C - 66;
-    icon_route(l, xi, 150, YEL);
-    fmt_dist(b, sizeof b, r->distance_m, c->mph);
-    text(l, b, &lv_font_montserrat_32, 0xFFFFFF, xt, 150, 220, LV_TEXT_ALIGN_LEFT);
-    icon_clock(l, xi, 204, 10, YEL);
-    int m = (int)(r->elapsed_s + 30) / 60;
-    if (m >= 60) snprintf(b, sizeof b, "%d hr %d min", m / 60, m % 60);
-    else snprintf(b, sizeof b, "%d min", m);
-    text(l, b, &lv_font_montserrat_28, 0xFFFFFF, xt, 204, 220, LV_TEXT_ALIGN_LEFT);
-    icon_speed(l, xi, 256, YEL);
-    float avg = r->moving_s ? r->distance_m / (float)r->moving_s * (c->mph ? 2.23694f : 3.6f) : 0;
-    snprintf(b, sizeof b, "%.1f %s", avg, c->mph ? "mph" : "km/h");
-    text(l, b, &lv_font_montserrat_28, 0xFFFFFF, xt, 256, 220, LV_TEXT_ALIGN_LEFT);
-    if (rec) CTEXT(l, "Tap twice to end", &lv_font_montserrat_16, GREY, C, 318, 240);
-    else check_badge(l, C, 330);                           /* saved */
+    CTEXT(l, rec ? "THIS RIDE" : "RIDE SAVED", &lv_font_montserrat_14, rec ? BOS_SOFT : BOS_GO, C, 98, 200);
+
+    /* the grid */
+    line(l, C, 122, C, 300, 1, BOS_RULE);
+    line(l, 64, 211, 348, 211, 1, BOS_RULE);
+    const int xl = C - 74, xr = C + 74;
+    double km = r->distance_m / 1000.0;
+    if (c->mph) km /= 1.609344;
+    snprintf(v, sizeof v, km < 100 ? "%.1f" : "%.0f", km);
+    stat_cell(l, xl, 138, "DISTANCE", v, c->mph ? "mi" : "km");
+    int m = (int)(r->moving_s + 30) / 60;
+    if (m >= 60) { snprintf(v, sizeof v, "%d:%02d", m / 60, m % 60); stat_cell(l, xr, 138, "MOVING", v, "h"); }
+    else { snprintf(v, sizeof v, "%d", m); stat_cell(l, xr, 138, "MOVING", v, "min"); }
+    float k = c->mph ? 2.23694f : 3.6f;
+    float avg = r->moving_s ? r->distance_m / (float)r->moving_s * k : 0;
+    snprintf(v, sizeof v, "%.0f", avg);
+    stat_cell(l, xl, 226, "AVERAGE", v, c->mph ? "mph" : "km/h");
+    snprintf(v, sizeof v, "%.0f", r->max_cms / 100.0f * k);
+    stat_cell(l, xr, 226, "TOP", v, c->mph ? "mph" : "km/h");
+
+    if (rec) CTEXT(l, "Tap twice to end", &lv_font_montserrat_14, BOS_MUTED, C, 330, 240);
+    else check_badge(l, C, 334);                            /* saved */
 }
 
 int32_t bos_key_ride(void)

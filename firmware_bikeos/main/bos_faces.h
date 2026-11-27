@@ -23,6 +23,7 @@ typedef struct {
     bool     navigating;
     int      remaining_m, remaining_s, progress_permille;   /* -1 when not navigating */
     double   trip_m;          /* distance since power-on (map_view's trip counter) */
+    uint16_t limit;           /* posted limit in the display units, 0 unknown */
 } bos_face_ctx_t;
 
 /* waypoint data from the phone (nav_core, GUI task) */
@@ -30,6 +31,8 @@ void bos_stops_set(const uint8_t *msg, size_t len);
 void bos_stops_clear(void);
 bool bos_stops_present(void);
 
+void    bos_draw_cruise(lv_layer_t *layer, const bos_face_ctx_t *c);   /* 0.11: speed + compass ring */
+int32_t bos_key_cruise(const bos_face_ctx_t *c);
 void    bos_draw_eta(lv_layer_t *layer, const bos_face_ctx_t *c);
 void    bos_draw_stops(lv_layer_t *layer, const bos_face_ctx_t *c);
 void    bos_draw_track(lv_layer_t *layer, const bos_face_ctx_t *c);

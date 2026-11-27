@@ -8,6 +8,7 @@
 #include "settings.h"
 #include "tiles.h"
 #include "bos_faces.h"  // bike-os: Beeline-style faces
+#include "bos_style.h"  // bike-os 0.11 look
 #include "touch.h"
 #include "esp_attr.h"
 #include "esp_rom_sys.h"
@@ -605,7 +606,7 @@ static int speed_units(void)
     return (int)lroundf(s_speed_cms * k);
 }
 
-static void draw_speedo(lv_layer_t *layer)
+__attribute__((unused)) static void draw_speedo(lv_layer_t *layer)
 {
     bool live = fix_is_live();
     int max = nav_view_mph() ? SPD_MAX_MPH : SPD_MAX_KMH;
@@ -685,7 +686,7 @@ static void draw_speedo(lv_layer_t *layer)
 }
 
 // What the speedometer shows, folded into one number: a change means redraw.
-static int32_t speedo_key(void)
+__attribute__((unused)) static int32_t speedo_key(void)
 {
     uint32_t k = (uint32_t)(fix_is_live() ? speed_units() + 1 : 0);  // 0..~250
     k = k * 257u + nav_view_limit();
@@ -1417,23 +1418,32 @@ static void draw_roads(uint8_t *fb, uint32_t stride)
     double w = world_px();
     float r = s_f_rot * (float)M_PI / 180.0f, c = cosf(r), sn = sinf(r), wf = (float)w;
     road_fade_build(w, c, sn);
-    static uint16_t minor[ROAD_SHADES], major[ROAD_SHADES];
+    // bike-os 0.11: streets glow, a dim wide halo under a bright thin core, both fading
+    // with distance from the route as before. The ground stays black: a navy clear needs
+    // a 16-bit fill in place of clear_black's banded memset, and that tears the panel.
+    static uint16_t halo_minor[ROAD_SHADES], halo_major[ROAD_SHADES], core_minor[ROAD_SHADES], core_major[ROAD_SHADES];
     static bool have_ramps;
     if (!have_ramps) {
         have_ramps = true;
-        road_ramp(COL_ROAD_MINOR, minor);
-        road_ramp(COL_ROAD_MAJOR, major);
+        road_ramp(BOS_STREET_HALO_MINOR, halo_minor);
+        road_ramp(BOS_STREET_HALO_MAJOR, halo_major);
+        road_ramp(BOS_STREET_CORE_MINOR, core_minor);
+        road_ramp(BOS_STREET_CORE_MAJOR, core_major);
     }
     // The origin's offset from the view centre, in pixels, before rotation.
     float bx = (float)((rs->onx - s_cx) * w), by = (float)((rs->ony - s_cy) * w);
-    for (int l = 0; l < rs->n_lines; l++) {
-        const road_line_t *ln = &rs->lines[l];
-        int px = 0, py = 0;
-        for (int i = 0; i < ln->n; i++) {
-            float wx = bx + rs->dx[ln->first + i] * wf, wy = by + rs->dy[ln->first + i] * wf;
-            int x = (int)lroundf(VIEW_C + wx * c + wy * sn), y = (int)lroundf(VIEW_C - wx * sn + wy * c);
-            if (i) fb_line(fb, stride, px, py, x, y, ln->cls ? major : minor, ln->cls ? 7 : 4);  // bike-os: was 5 : 3
-            px = x, py = y;
+    for (int pass = 0; pass < 2; pass++) {   // halos first, so no halo covers a core
+        for (int l = 0; l < rs->n_lines; l++) {
+            const road_line_t *ln = &rs->lines[l];
+            const uint16_t *ramp = pass ? (ln->cls ? core_major : core_minor) : (ln->cls ? halo_major : halo_minor);
+            int w = pass ? (ln->cls ? 3 : 2) : (ln->cls ? 9 : 6);   // 0.10: one pass, 7 : 4
+            int px = 0, py = 0;
+            for (int i = 0; i < ln->n; i++) {
+                float wx = bx + rs->dx[ln->first + i] * wf, wy = by + rs->dy[ln->first + i] * wf;
+                int x = (int)lroundf(VIEW_C + wx * c + wy * sn), y = (int)lroundf(VIEW_C - wx * sn + wy * c);
+                if (i) fb_line(fb, stride, px, py, x, y, ramp, w);
+                px = x, py = y;
+            }
         }
     }
 }
@@ -1699,6 +1709,7 @@ static bos_face_ctx_t face_ctx(void)
         .remaining_s = nav_view_remaining_s(),
         .progress_permille = nav_view_progress_permille(),
         .trip_m = s_trip_m,
+        .limit = nav_view_limit(),
     };
     return c;
 }
@@ -1708,8 +1719,10 @@ static int32_t face_key(void)
 {
     uint32_t minute = clock_now() / 60 % 1440;
     switch (s_face) {
-    case FACE_SPEED:
-        return speedo_key();
+    case FACE_SPEED: {  // bike-os 0.11: the cruise face
+        bos_face_ctx_t c = face_ctx();
+        return bos_key_cruise(&c);
+    }
     case FACE_STOPS:  // bike-os
         return bos_key_stops();
     case FACE_TRACK: {  // bike-os
@@ -1741,7 +1754,7 @@ static void draw_cb(lv_event_t *e)
         else if (s_face == FACE_TRACK) bos_draw_track(layer, &fc);
         else if (s_face == FACE_RIDE) bos_draw_ride(layer, &fc);
         else if (s_face == FACE_PHONE) draw_phone(layer);
-        else draw_speedo(layer);
+        else bos_draw_cruise(layer, &fc);  // bike-os 0.11 (was draw_speedo)
         draw_dots(layer);
         s_r_valid = true;
         return;
